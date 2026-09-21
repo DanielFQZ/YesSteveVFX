@@ -15,18 +15,25 @@ YSM 模型只要作为普通实体参与世界渲染，就会与洞口平面共�
 ## 命令
 
 ```text
-/vfx portal play <id> <x> <y> <z> <radiusX> <radiusZ> <depth>
+/vfx portal play <id> <radiusX> <radiusZ> <depth>
+/vfx portal play <id> <radiusX> <radiusZ> <depth> <x> <y> <z>
 /vfx portal stop <id>
 /vfx portal clear
 ```
 
+不填写最后的坐标时，会使用执行者的位置；如果执行者是玩家，就是玩家脚下。坐标支持绝对坐标和 `~ ~ ~` 相对坐标。
+
 示例：
 
 ```text
-/vfx portal play boss_gate 100.5 64 200.5 6 4 12
+/vfx portal play boss_gate 6 4 12
+/vfx portal play boss_gate 6 4 12 ~ ~ ~
+/vfx portal play boss_gate 6 4 12 100.5 64 200.5
 ```
 
-命令使用执行者所在维度。当前 `depth` 已同步并保存在状态中，下一步用于视差/虚拟底面采样。
+命令使用执行者所在维度。`depth` 会影响洞内底景的缩放和视差偏移。
+
+渲染上，洞口现在由不受光照影响的深色内层、带视差偏移的内层底景和动画边缘组成；实体阴影绘制完成后会再次覆盖内层，因此洞内不会被普通实体阴影染成平面阴影。
 
 ## 构建
 

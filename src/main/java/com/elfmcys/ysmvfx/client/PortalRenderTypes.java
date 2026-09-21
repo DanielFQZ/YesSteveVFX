@@ -8,8 +8,13 @@ import net.minecraft.client.renderer.RenderType;
 
 /** Render states kept in one place so the render event remains readable. */
 final class PortalRenderTypes {
-    static final RenderType FILL = RenderType.create(
-            YesSteveVfx.MOD_ID + ":portal_fill",
+    /**
+     * Opaque, unlit portal interior. It deliberately writes depth: terrain
+     * inside the aperture is hidden, while entities closer to the camera can
+     * still pass the depth test and appear to come through the opening.
+     */
+    static final RenderType INTERIOR = RenderType.create(
+            YesSteveVfx.MOD_ID + ":portal_interior",
             DefaultVertexFormat.POSITION_COLOR,
             com.mojang.blaze3d.vertex.VertexFormat.Mode.TRIANGLE_FAN,
             256,
@@ -17,7 +22,7 @@ final class PortalRenderTypes {
             false,
             RenderType.CompositeState.builder()
                     .setShaderState(new RenderStateShard.ShaderStateShard(GameRenderer::getPositionColorShader))
-                    .setTransparencyState(Access.TRANSLUCENT)
+                    .setTransparencyState(Access.OPAQUE)
                     .setDepthTestState(Access.LEQUAL)
                     .setCullState(Access.NO_CULL)
                     .setWriteMaskState(Access.COLOR_DEPTH)
@@ -49,6 +54,7 @@ final class PortalRenderTypes {
 
     /** RenderStateShard keeps its standard states protected in 1.20.1. */
     private static final class Access extends RenderStateShard {
+        private static final TransparencyStateShard OPAQUE = NO_TRANSPARENCY;
         private static final TransparencyStateShard TRANSLUCENT = TRANSLUCENT_TRANSPARENCY;
         private static final DepthTestStateShard LEQUAL = LEQUAL_DEPTH_TEST;
         private static final CullStateShard NO_CULL = RenderStateShard.NO_CULL;
