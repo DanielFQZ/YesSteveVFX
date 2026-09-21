@@ -1,0 +1,81 @@
+plugins {
+    id 'java-library'
+    id 'idea'
+    id 'net.neoforged.moddev.legacyforge' version '2.+'
+}
+
+version = mod_version
+group = 'com.elfmcys.ysmvfx'
+archivesBaseName = 'ysm-vfx'
+
+def runningJava = JavaVersion.current().majorVersion.toInteger()
+def compilerJava = runningJava >= 21 ? 21 : 17
+java {
+    // Forge 1.20.1 is a Java 17 target. A newer local JDK is also accepted
+    // and is constrained to Java 17 bytecode below.
+    toolchain.languageVersion = JavaLanguageVersion.of(compilerJava)
+}
+
+legacyForge {
+    version = '1.20.1-47.4.16'
+
+    parchment {
+        mappingsVersion = '2023.09.03'
+        minecraftVersion = '1.20.1'
+    }
+
+    mods {
+        ysm_vfx {
+            sourceSet sourceSets.main
+        }
+    }
+
+    runs {
+        configureEach {
+            logLevel = org.slf4j.event.Level.DEBUG
+        }
+
+        client {
+            client()
+            gameDirectory = project.file('run/client')
+        }
+
+        server {
+            server()
+            gameDirectory = project.file('run/server')
+        }
+    }
+}
+
+// ModDev's artifact task asks for a Java 17 executable. Use the same JDK that
+// launched Gradle; Java 17 and newer are valid for this workspace, and the
+// compile task below still emits Java 17 bytecode.
+tasks.named('createMinecraftArtifacts') {
+    def javaHome = System.getProperty('java.home')
+    def javaExecutable = org.gradle.internal.os.OperatingSystem.current().isWindows()
+            ? "${javaHome}/bin/java.exe"
+            : "${javaHome}/bin/java"
+    toolsJavaExecutable = file(javaExecutable).absolutePath
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // YSM is a runtime integration target. The VFX core intentionally does not
+    // compile against YSM internals; ordinary YSM entity rendering already
+    // participates in the vanilla depth buffer.
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('META-INF/mods.toml') {
+        expand version: project.version
+    }
+}

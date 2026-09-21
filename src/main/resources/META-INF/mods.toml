@@ -1,0 +1,32 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+issueTrackerURL="https://example.invalid/ysm-vfx/issues"
+
+[[mods]]
+modId="ysm_vfx"
+version="${version}"
+displayName="YesSteve VFX"
+authors="YesSteveModel"
+description='''A small client-side visual effects framework for portal and hole effects.'''
+
+[[dependencies.ysm_vfx]]
+modId="forge"
+mandatory=true
+versionRange="[47.4.16,)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.ysm_vfx]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.20.2)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.ysm_vfx]]
+modId="ysm"
+mandatory=false
+versionRange="[0,)"
+ordering="AFTER"
+side="CLIENT"
