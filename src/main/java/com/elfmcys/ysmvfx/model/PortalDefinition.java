@@ -22,11 +22,15 @@ public record PortalDefinition(
         if (dimension == null) {
             throw new IllegalArgumentException("Portal dimension must not be null");
         }
-        if (radiusX <= 0.0f || radiusZ <= 0.0f) {
-            throw new IllegalArgumentException("Portal radii must be positive");
+        if (!Float.isFinite(radiusX) || !Float.isFinite(radiusZ)
+                || radiusX <= 0.0f || radiusZ <= 0.0f) {
+            throw new IllegalArgumentException("Portal radii must be finite and positive");
         }
-        if (virtualDepth < 0.0f) {
-            throw new IllegalArgumentException("Portal virtual depth must not be negative");
+        if (!Float.isFinite(virtualDepth) || virtualDepth < 0.0f) {
+            throw new IllegalArgumentException("Portal virtual depth must be finite and non-negative");
+        }
+        if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)) {
+            throw new IllegalArgumentException("Portal position must be finite");
         }
     }
 

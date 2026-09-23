@@ -17,6 +17,8 @@ YSM 模型只要作为普通实体参与世界渲染，就会与洞口平面共�
 ```text
 /vfx portal play <id> <radiusX> <radiusZ> <depth>
 /vfx portal play <id> <radiusX> <radiusZ> <depth> <x> <y> <z>
+/vfx portal play_for <id> <radiusX> <radiusZ> <depth> <durationTicks>
+/vfx portal play_for <id> <radiusX> <radiusZ> <depth> <durationTicks> <x> <y> <z>
 /vfx portal stop <id>
 /vfx portal clear
 ```
@@ -29,13 +31,16 @@ YSM 模型只要作为普通实体参与世界渲染，就会与洞口平面共�
 /vfx portal play boss_gate 6 4 12
 /vfx portal play boss_gate 6 4 12 ~ ~ ~
 /vfx portal play boss_gate 6 4 12 100.5 64 200.5
+/vfx portal play_for boss_gate 6 4 12 200
 ```
 
-命令使用执行者所在维度。`depth` 会影响洞内底景的缩放和视差偏移。
+命令使用执行者所在维度。`depth` 会影响洞内底景的缩放和视差偏移。`play_for` 的持续时间单位是游戏刻（20 刻约 1 秒），到期后会自动从服务端和客户端移除。
 
 渲染上，洞口现在由不受光照影响的深色内层、带视差偏移的内层底景和动画边缘组成；实体阴影绘制完成后会再次覆盖内层，因此洞内不会被普通实体阴影染成平面阴影。
 
 ## 构建
+
+Forge 1.20.1 的 ModDev 插件要求运行时使用 Java 17 或更高版本。请先将 `JAVA_HOME` 指向 JDK 17/21，再执行 Gradle 命令。
 
 ```text
 gradlew.bat build

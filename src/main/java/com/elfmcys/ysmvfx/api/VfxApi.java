@@ -2,7 +2,6 @@ package com.elfmcys.ysmvfx.api;
 
 import com.elfmcys.ysmvfx.model.PortalDefinition;
 import com.elfmcys.ysmvfx.server.ServerPortalManager;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 
 /**
@@ -18,13 +17,30 @@ public final class VfxApi {
                                                    double x, double y, double z,
                                                    float radiusX, float radiusZ,
                                                    float virtualDepth) {
+        return portal(level, id, x, y, z, radiusX, radiusZ, virtualDepth, -1);
+    }
+
+    public static PortalDefinition timedPortal(ServerLevel level, String id,
+                                               double x, double y, double z,
+                                               float radiusX, float radiusZ,
+                                               float virtualDepth, int durationTicks) {
+        if (durationTicks <= 0) {
+            throw new IllegalArgumentException("Portal duration must be positive");
+        }
+        return portal(level, id, x, y, z, radiusX, radiusZ, virtualDepth, durationTicks);
+    }
+
+    private static PortalDefinition portal(ServerLevel level, String id,
+                                           double x, double y, double z,
+                                           float radiusX, float radiusZ,
+                                           float virtualDepth, int duration) {
         return new PortalDefinition(
                 id,
                 level.dimension().location(),
                 x, y, z,
                 radiusX, radiusZ, virtualDepth,
                 level.getGameTime(),
-                -1
+                duration
         );
     }
 

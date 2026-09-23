@@ -3,6 +3,7 @@ package com.elfmcys.ysmvfx.command;
 import com.elfmcys.ysmvfx.model.PortalDefinition;
 import com.elfmcys.ysmvfx.server.ServerPortalManager;
 import com.mojang.brigadier.arguments.DoubleArgumentType;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
@@ -45,6 +46,18 @@ public final class VfxCommands {
 
         root.then(Commands.literal("portal").then(play));
 
+        var timedPosition = Commands.argument("position", Vec3Argument.vec3())
+                .executes(context -> play(context, Vec3Argument.getVec3(context, "position"), true));
+        var duration = Commands.argument("durationTicks", IntegerArgumentType.integer(1))
+                .executes(context -> play(context, null, true))
+                .then(timedPosition);
+        var timedDepth = Commands.argument("depth", DoubleArgumentType.doubleArg(0.0)).then(duration);
+        var timedRadiusZ = Commands.argument("radiusZ", DoubleArgumentType.doubleArg(0.05)).then(timedDepth);
+        var timedRadiusX = Commands.argument("radiusX", DoubleArgumentType.doubleArg(0.05)).then(timedRadiusZ);
+        var playFor = Commands.literal("play_for")
+                .then(Commands.argument("id", StringArgumentType.word()).then(timedRadiusX));
+        root.then(Commands.literal("portal").then(playFor));
+
         root.then(Commands.literal("portal")
                 .then(Commands.literal("stop")
                         .then(Commands.argument("id", StringArgumentType.word())
@@ -72,12 +85,17 @@ public final class VfxCommands {
     }
 
     private static int play(CommandContext<CommandSourceStack> context, Vec3 explicitPosition) {
+        return play(context, explicitPosition, false);
+    }
+
+    private static int play(CommandContext<CommandSourceStack> context, Vec3 explicitPosition, boolean timed) {
         CommandSourceStack source = context.getSource();
         Vec3 position = explicitPosition != null ? explicitPosition : executorFeet(source);
         String id = StringArgumentType.getString(context, "id");
         double radiusX = DoubleArgumentType.getDouble(context, "radiusX");
         double radiusZ = DoubleArgumentType.getDouble(context, "radiusZ");
         double depth = DoubleArgumentType.getDouble(context, "depth");
+        int duration = timed ? IntegerArgumentType.getInteger(context, "durationTicks") : -1;
 
         PortalDefinition definition = new PortalDefinition(
                 id,
@@ -87,10 +105,11 @@ public final class VfxCommands {
                 (float) radiusZ,
                 (float) depth,
                 source.getLevel().getGameTime(),
-                -1
+                duration
         );
         ServerPortalManager.start(definition);
-        source.sendSuccess(() -> Component.literal("[ysm_vfx] started portal '" + id + "'"), true);
+        source.sendSuccess(() -> Component.literal("[ysm_vfx] started "
+                + (timed ? duration + "-tick " : "") + "portal '" + id + "'"), true);
         return 1;
     }
 
