@@ -25,7 +25,7 @@ legacyForge {
     }
 
     mods {
-        ysm_vfx {
+        yesstevevfx {
             sourceSet sourceSets.main
         }
     }
@@ -62,10 +62,62 @@ repositories {
     mavenCentral()
 }
 
+def ysmJarPath = providers.gradleProperty('ysmJar').orNull
+def eyelibJarPath = providers.gradleProperty('eyelibJar').orNull
+
+sourceSets {
+    ysm
+    eyelib
+}
+
 dependencies {
-    // YSM is a runtime integration target. The VFX core intentionally does not
-    // compile against YSM internals; ordinary YSM entity rendering already
-    // participates in the vanilla depth buffer.
+    // YSM and eyelib integrations are isolated source sets. The core remains
+    // buildable without either optional mod; pass -PysmJar/-PeyelibJar to
+    // compile and package the corresponding bridge.
+    if (ysmJarPath != null) {
+        ysmCompileOnly files(ysmJarPath)
+        ysmAnnotationProcessor files(ysmJarPath)
+        ysmCompileOnly sourceSets.main.output
+        sourceSets.ysm.compileClasspath += sourceSets.main.output + configurations.compileClasspath
+    }
+    if (eyelibJarPath != null) {
+        eyelibCompileOnly files(eyelibJarPath)
+        eyelibCompileOnly sourceSets.main.output
+        sourceSets.eyelib.compileClasspath += sourceSets.main.output + configurations.compileClasspath
+    }
+
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testRuntimeOnly 'com.google.code.gson:gson:2.10.1'
+}
+
+if (ysmJarPath != null) {
+    tasks.named('compileYsmJava') {
+        dependsOn tasks.named('classes')
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    tasks.named('jar') {
+        dependsOn tasks.named('compileYsmJava')
+        from sourceSets.ysm.output
+    }
+}
+
+if (eyelibJarPath != null) {
+    tasks.named('compileEyelibJava') {
+        dependsOn tasks.named('classes')
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    tasks.named('jar') {
+        dependsOn tasks.named('compileEyelibJava')
+        from sourceSets.eyelib.output
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
 }
 
 tasks.withType(JavaCompile).configureEach {

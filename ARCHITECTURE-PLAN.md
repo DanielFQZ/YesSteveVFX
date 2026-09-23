@@ -51,7 +51,7 @@ config/yesstevevfx/
 yesstevevfx:<pack>/<asset>
 ~~~
 
-当前骨架使用 \`ysm_vfx\`。因为它还没有稳定发行版，建议现在改名；如果必须保留现有兼容性，则保留 \`ysm_vfx\` 作为 Forge modId，只把显示名改为 YesSteveVFX，不能同时让两个 namespace 代表同一套资源。
+当前骨架使用 \`yesstevevfx\`。因为它还没有稳定发行版，建议现在改名；如果必须保留现有兼容性，则保留 \`yesstevevfx\` 作为 Forge modId，只把显示名改为 YesSteveVFX，不能同时让两个 namespace 代表同一套资源。
 
 ## 本地文件布局
 

@@ -64,7 +64,7 @@ final class PortalRenderTypes {
         private static final OutputStateShard MAIN = MAIN_TARGET;
 
         private Access() {
-            super("ysm_vfx_access", () -> { }, () -> { });
+            super("yesstevevfx_access", () -> { }, () -> { });
         }
     }
 }

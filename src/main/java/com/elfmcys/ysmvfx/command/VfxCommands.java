@@ -66,8 +66,8 @@ public final class VfxCommands {
                                     boolean removed = ServerPortalManager.stop(id);
                                     context.getSource().sendSuccess(
                                             () -> Component.literal(removed
-                                                    ? "[ysm_vfx] stopped portal '" + id + "'"
-                                                    : "[ysm_vfx] portal not found: '" + id + "'"),
+                                                    ? "[yesstevevfx] stopped portal '" + id + "'"
+                                                    : "[yesstevevfx] portal not found: '" + id + "'"),
                                             true);
                                     return 1;
                                 }))));
@@ -77,7 +77,7 @@ public final class VfxCommands {
                         .executes(context -> {
                             ServerPortalManager.clear();
                             context.getSource().sendSuccess(
-                                    () -> Component.literal("[ysm_vfx] cleared all portals"), true);
+                                    () -> Component.literal("[yesstevevfx] cleared all portals"), true);
                             return 1;
                         })));
 
@@ -108,7 +108,7 @@ public final class VfxCommands {
                 duration
         );
         ServerPortalManager.start(definition);
-        source.sendSuccess(() -> Component.literal("[ysm_vfx] started "
+        source.sendSuccess(() -> Component.literal("[yesstevevfx] started "
                 + (timed ? duration + "-tick " : "") + "portal '" + id + "'"), true);
         return 1;
     }

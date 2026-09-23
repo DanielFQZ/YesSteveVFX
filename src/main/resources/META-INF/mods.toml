@@ -4,28 +4,35 @@ license="MIT"
 issueTrackerURL="https://example.invalid/ysm-vfx/issues"
 
 [[mods]]
-modId="ysm_vfx"
+modId="yesstevevfx"
 version="${version}"
 displayName="YesSteve VFX"
 authors="YesSteveModel"
-description='''A small client-side visual effects framework for portal and hole effects.'''
+description='''A client-side Bedrock model and particle effect runtime for YesSteveModel.'''
 
-[[dependencies.ysm_vfx]]
+[[dependencies.yesstevevfx]]
 modId="forge"
 mandatory=true
 versionRange="[47.4.16,)"
 ordering="NONE"
 side="BOTH"
 
-[[dependencies.ysm_vfx]]
+[[dependencies.yesstevevfx]]
 modId="minecraft"
 mandatory=true
 versionRange="[1.20.1,1.20.2)"
 ordering="NONE"
 side="BOTH"
 
-[[dependencies.ysm_vfx]]
+[[dependencies.yesstevevfx]]
 modId="ysm"
+mandatory=false
+versionRange="[3.0,)"
+ordering="AFTER"
+side="BOTH"
+
+[[dependencies.yesstevevfx]]
+modId="eyelib"
 mandatory=false
 versionRange="[0,)"
 ordering="AFTER"

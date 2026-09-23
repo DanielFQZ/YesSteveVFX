@@ -14,5 +14,6 @@ public final class ClientLifecycleEvents {
     @SubscribeEvent
     public static void onLogout(ClientPlayerNetworkEvent.LoggingOut event) {
         ClientPortalManager.clear();
+        VfxClientRuntime.unload();
     }
 }

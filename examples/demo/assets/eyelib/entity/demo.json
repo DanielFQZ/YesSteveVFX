@@ -1,0 +1,12 @@
+{
+ "minecraft:client_entity": {"description": {
+  "identifier":"yesstevevfx:demo",
+  "materials":{"default":"entity_alphatest"},
+  "textures":{"default":"yesstevevfx:textures/demo"},
+  "geometry":{"default":"geometry.yesstevevfx.demo"},
+  "animations":{"demo":"animation.yesstevevfx.demo"},
+  "particle_effects":{"spark":"yesstevevfx:demo/spark"},
+  "render_controllers":["controller.render.yesstevevfx.demo"],
+  "scripts":{"animate":["demo"]}
+ }}
+}
