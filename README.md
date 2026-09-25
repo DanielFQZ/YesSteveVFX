@@ -2,6 +2,8 @@
 
 YesSteveVFX 是面向 Forge 1.20.1 的客户端特效运行时。一个 effect 由 Bedrock 模型、动画、render controller、纹理和粒子资源组成；YesSteveVFX 管理配置、实例生命周期和 carrier，eyelib 负责实际的 Bedrock 模型、动画和粒子渲染，YSM 只负责通过 Molang 指令帧控制播放。
 
+当前仓库包含一个可用于联调的测试版本实现。它以关闭 Oculus 光影作为基础验收环境，需要 Forge 1.20.1、eyelib；要使用 YSM 动画控制时还需要安装 YSM。
+
 运行时关系如下：
 
 ```text
@@ -14,7 +16,7 @@ YesSteveVFX client runtime
 eyelib entity renderer, animation and particle pipeline
 ```
 
-VFX carrier 是客户端本地的无碰撞 ArmorStand，不参与游戏逻辑，也不需要服务端 NPC 插件。它只是让 eyelib 可以复用自己的 `LivingEntity` 渲染入口；carrier 的位置和朝向每 tick 跟随触发特效的 YSM 实体。
+VFX carrier 是客户端本地的无碰撞 ArmorStand，不参与游戏逻辑，也不需要服务端 NPC 插件。它只是让 eyelib 可以复用自己的 `LivingEntity` 渲染入口；carrier 保留上一 tick 的变换并更新当前变换，让模型和粒子沿着与触发特效的 YSM 实体相同的帧间插值轨迹跟随。
 
 ## 本地资源
 
@@ -54,7 +56,13 @@ config/yesstevevfx/packs/<pack_id>/
 }
 ```
 
-可直接复制仓库中的 [examples/demo](E:/JavaProject/YesSteveModel/YesSteveVFX/examples/demo) 到 `config/yesstevevfx/packs/demo` 进行测试。加载器会在发布前完整读取和校验资源，并拒绝未知字段、路径穿越、符号链接、重复 ID 以及超出大小预算的资源。
+可直接复制仓库中的 [examples/demo](examples/demo) 到 `config/yesstevevfx/packs/demo` 进行测试。加载器会在发布前完整读取和校验资源，并拒绝未知字段、路径穿越、符号链接、重复 ID 以及超出大小预算的资源。
+
+仓库中的 [examples/test_effect](examples/test_effect) 还包含 `test1` 到 `test5` 五个组合测试：前三个同时包含模型动画和粒子，`test4` 只包含模型动画，`test5` 只包含粒子。复制后执行 `/vfx_client reload`，再分别播放 `yesstevevfx:test1` 到 `yesstevevfx:test5`。
+
+面向资源作者的配置说明见 [docs/USAGE.md](docs/USAGE.md)。
+
+YSM 动画指令帧的完整接入示例见 [docs/YSM-INTEGRATION.md](docs/YSM-INTEGRATION.md)，Molang 函数参数和返回值规范见 [docs/MOLANG-REFERENCE.md](docs/MOLANG-REFERENCE.md)。
 
 ## 控制接口
 
@@ -98,7 +106,7 @@ YSM 和 eyelib 是可选 source set。拿到对应的 1.20.1 JAR 后，使用：
   -PeyelibJar='D:\libs\eyelib-1.20.1.jar'
 ```
 
-不传这两个属性时，核心构件不链接任何 YSM 或 eyelib 私有类；传入属性时，bridge 类会被编译并合并进最终 JAR。当前仓库已用 JDK 21 验证 `compileJava` 和 5 个资源加载测试。eyelib 自身构建若因其 Stonecutter/Gradle 环境失败，需要先由 eyelib 提供可用构件，VFX 代码不应复制 eyelib 的渲染实现。
+不传这两个属性时，核心构件不链接任何 YSM 或 eyelib 私有类；传入属性时，bridge 类会被编译并合并进最终 JAR。当前仓库已用 JDK 21 验证完整构建和资源加载测试。eyelib 自身构建若因其 Stonecutter/Gradle 环境失败，需要先由 eyelib 提供可用构件，VFX 代码不应复制 eyelib 的渲染实现。
 
 ## 兼容边界
 

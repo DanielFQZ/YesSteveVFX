@@ -6,6 +6,8 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.TickEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -22,7 +24,12 @@ public final class EyelibBootstrap {
     public static void setup(FMLClientSetupEvent event) {
         event.enqueueWork(() -> {
             try {
-                VfxClientRuntime.installBackend(new EyelibBackend());
+                EyelibBackend backend = new EyelibBackend();
+                VfxClientRuntime.installBackend(backend);
+                MinecraftForge.EVENT_BUS.addListener((TickEvent.RenderTickEvent tick) -> {
+                    if (tick.phase == TickEvent.Phase.END) backend.afterRenderFrame();
+                });
+                LOGGER.info("Installed eyelib VFX backend");
             } catch (LinkageError | RuntimeException exception) {
                 // A bridge-built jar can still be placed in a profile without its
                 // optional renderer dependency. Keep the core client usable there.

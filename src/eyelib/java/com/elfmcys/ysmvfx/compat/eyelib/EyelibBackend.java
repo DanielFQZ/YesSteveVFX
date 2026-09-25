@@ -10,6 +10,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mojang.serialization.JsonOps;
 import io.github.tt432.eyelib.animation.AnimationComponent;
+import io.github.tt432.eyelib.animation.AnimationRegistries;
 import io.github.tt432.eyelib.animation.bedrock.BrAnimation;
 import io.github.tt432.eyelib.animation.bedrock.controller.BrAnimationControllers;
 import io.github.tt432.eyelib.bridge.client.render.texture.NativeImagePort;
@@ -18,7 +19,6 @@ import io.github.tt432.eyelib.capability.RenderData;
 import io.github.tt432.eyelib.client.manager.ClientEntityManager;
 import io.github.tt432.eyelib.client.manager.ModelManager;
 import io.github.tt432.eyelib.client.manager.RenderControllerManager;
-import io.github.tt432.eyelib.client.particle.RootAnimationParticleSpawner;
 import io.github.tt432.eyelib.client.render.EntityRenderOrchestrator;
 import io.github.tt432.eyelib.client.render.controller.RenderControllers;
 import io.github.tt432.eyelib.client.registry.AnimationAssetRegistry;
@@ -28,7 +28,12 @@ import io.github.tt432.eyelib.importer.entity.BrClientEntity;
 import io.github.tt432.eyelib.importer.model.importer.BedrockGeometryImporter;
 import io.github.tt432.eyelib.importer.particle.BrParticle;
 import io.github.tt432.eyelib.model.Model;
-import io.github.tt432.eyelib.particle.loading.ParticleResourcePublication;
+import io.github.tt432.eyelib.particle.loading.ParticleDefinitionRegistry;
+import io.github.tt432.eyelib.particle.runtime.ParticleDefinition;
+import io.github.tt432.eyelib.particle.runtime.ParticleDefinitionAdapter;
+import io.github.tt432.eyelib.util.repository.Repository;
+import net.minecraft.client.Minecraft;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.LivingEntity;
 import org.jetbrains.annotations.Nullable;
@@ -59,7 +64,6 @@ import java.util.UUID;
 public final class EyelibBackend implements EffectBackend {
     private static final Logger LOGGER = LoggerFactory.getLogger(EyelibBackend.class);
     private static final String NAMESPACE = "yesstevevfx";
-    private static final Object ANIMATION_SOURCE = "yesstevevfx";
 
     private final Map<EffectHandle, Instance> instances = new LinkedHashMap<>();
     private final Set<String> ownedModelIds = new HashSet<>();
@@ -67,6 +71,8 @@ public final class EyelibBackend implements EffectBackend {
     private final Set<String> ownedRenderControllerIds = new HashSet<>();
     private final Set<String> ownedAnimationIds = new HashSet<>();
     private final Set<String> ownedControllerIds = new HashSet<>();
+    private final Set<String> ownedParticleIds = new HashSet<>();
+    private final Set<String> ownedTextureIds = new HashSet<>();
     private Map<String, EffectAssetBundle> loadedBundles = Map.of();
 
     @Override
@@ -80,10 +86,11 @@ public final class EyelibBackend implements EffectBackend {
         ModelManager.INSTANCE.putAll(publication.models);
         ClientEntityManager.INSTANCE.putAll(publication.entities);
         RenderControllerManager.INSTANCE.putAll(publication.renderControllers);
-        AnimationAssetRegistry.stageAnimations(ANIMATION_SOURCE, publication.animations);
-        AnimationAssetRegistry.stageControllers(ANIMATION_SOURCE, publication.controllers);
-        ParticleResourcePublication.replaceFromJsonResources(ANIMATION_SOURCE,
-                publication.particles, LOGGER);
+        // 21.1.14 has one global staging slot. Publishing individual entries
+        // preserves eyelib's loaded assets and other mods' animation sources.
+        publication.animations.values().forEach(AnimationAssetRegistry::publishAnimation);
+        publication.controllers.values().forEach(AnimationAssetRegistry::publishAnimationController);
+        publication.particles.values().forEach(ParticleDefinitionRegistry.publisher()::publishParticle);
         publication.textures.forEach((id, bytes) -> {
             try {
                 NativeImagePort.loadAndUpload(id, new ByteArrayInputStream(bytes));
@@ -91,15 +98,14 @@ public final class EyelibBackend implements EffectBackend {
                 throw new PublicationException("Cannot upload texture " + id, e);
             }
         });
-        if (!publication.textures.isEmpty()) {
-            NativeImagePort.evictDerivedTextures();
-        }
 
         ownedModelIds.addAll(publication.models.keySet());
         ownedEntityIds.addAll(publication.entities.keySet());
         ownedRenderControllerIds.addAll(publication.renderControllers.keySet());
         publication.animations.values().forEach(value -> ownedAnimationIds.addAll(value.animations().keySet()));
         publication.controllers.values().forEach(value -> ownedControllerIds.addAll(value.animationControllers().keySet()));
+        ownedParticleIds.addAll(publication.particles.keySet());
+        ownedTextureIds.addAll(publication.textures.keySet());
         loadedBundles = Map.copyOf(bundles);
     }
 
@@ -120,10 +126,15 @@ public final class EyelibBackend implements EffectBackend {
         }
         carrier.moveTo(request.position().x, request.position().y, request.position().z,
                 request.yaw(), request.pitch());
-        RenderData<?> data = RenderData.getComponent(carrier);
-        data.ensureOwner(carrier);
-        BrClientEntity clientEntity = parseClientEntity(bundle);
-        EntityRenderOrchestrator.setupClientEntity(clientEntity, data).forEach(Runnable::run);
+        try {
+            RenderData<?> data = RenderData.getComponent(carrier);
+            data.ensureOwner(carrier);
+            BrClientEntity clientEntity = parseClientEntity(bundle);
+            EntityRenderOrchestrator.setupClientEntity(clientEntity, data).forEach(Runnable::run);
+        } catch (Exception | LinkageError exception) {
+            carrierFactory.remove(carrier);
+            throw exception;
+        }
 
         Instance instance = new Instance(carrier, carrierFactory, bundle, request.clientTick());
         instances.put(instance, instance);
@@ -136,7 +147,8 @@ public final class EyelibBackend implements EffectBackend {
         if (instance == null) {
             return false;
         }
-        clearTrackedParticles(instance.carrier);
+        trackParticles(instance);
+        instance.particleIds.forEach(ParticlePort.getSpawnAdapter()::remove);
         instance.factory.remove(instance.carrier);
         return true;
     }
@@ -162,8 +174,23 @@ public final class EyelibBackend implements EffectBackend {
         if (instance == null || request == null) {
             return;
         }
-        instance.carrier.moveTo(request.position().x, request.position().y, request.position().z,
-                request.yaw(), request.pitch());
+        /*
+         * Keep the carrier's previous transform intact.  moveTo() is intended
+         * for teleports/spawns and also resets xo/yo/zo and the old rotations.
+         * Calling it once per client tick makes both Minecraft's entity renderer
+         * and eyelib's locator resolver see no interval to interpolate, so a
+         * following effect advances in visible 20 Hz steps.  setPos and the
+         * current rotation setters only update the current transform; the
+         * renderer can then interpolate from the previous tick exactly like
+         * the source entity.  LivingEntity's
+         * body/head rotations are updated as well because eyelib's locator
+         * resolver interpolates those fields for attached particles.
+         */
+        instance.carrier.setPos(request.position().x, request.position().y, request.position().z);
+        instance.carrier.setYRot(request.yaw());
+        instance.carrier.setXRot(request.pitch());
+        instance.carrier.setYBodyRot(request.yaw());
+        instance.carrier.setYHeadRot(request.yaw());
     }
 
     @Override
@@ -191,30 +218,43 @@ public final class EyelibBackend implements EffectBackend {
         }
     }
 
-    private static void clearTrackedParticles(LivingEntity carrier) {
-        RenderData<?> data = RenderData.getComponent(carrier);
-        data.ensureOwner(carrier);
+    /** Capture public animation output each rendered frame, including completed clips. */
+    public void afterRenderFrame() {
+        instances.values().forEach(EyelibBackend::trackParticles);
+    }
+
+    private static void trackParticles(Instance instance) {
+        RenderData<?> data = RenderData.getComponent(instance.carrier);
         AnimationComponent animation = data.getAnimationComponent();
-        RootAnimationParticleSpawner.removeTracked(animation, ParticlePort.getSpawnAdapter());
-        RootAnimationParticleSpawner.flushOrphaned(animation, ParticlePort.getSpawnAdapter());
+        if (animation.effects != null) {
+            animation.effects.particles.forEach(particles -> particles.forEach(
+                    particle -> instance.particleIds.add(particle.particleUUID())));
+        }
     }
 
     private void removeOwnedResources() {
-        // Clear source slots as well as live registries. Otherwise a future reload
-        // from another source would flush the old staged VFX assets back in.
-        AnimationAssetRegistry.stageAnimations(ANIMATION_SOURCE, Map.of());
-        AnimationAssetRegistry.stageControllers(ANIMATION_SOURCE, Map.of());
-        ParticleResourcePublication.replaceFromJsonResources(ANIMATION_SOURCE, Map.of(), LOGGER);
-        ModelManager.INSTANCE.removeAll(ownedModelIds);
-        ClientEntityManager.INSTANCE.removeAll(ownedEntityIds);
-        RenderControllerManager.INSTANCE.removeAll(ownedRenderControllerIds);
-        io.github.tt432.eyelib.animation.AnimationRegistries.animation().removeAll(ownedAnimationIds);
-        io.github.tt432.eyelib.animation.AnimationRegistries.animation().removeAll(ownedControllerIds);
+        removeOwned(ModelManager.INSTANCE, ownedModelIds);
+        removeOwned(ClientEntityManager.INSTANCE, ownedEntityIds);
+        removeOwned(RenderControllerManager.INSTANCE, ownedRenderControllerIds);
+        removeOwned(AnimationRegistries.animation(), ownedAnimationIds);
+        removeOwned(AnimationRegistries.animation(), ownedControllerIds);
+        removeOwned(ParticleDefinitionRegistry.store(), ownedParticleIds);
+        ownedTextureIds.forEach(id -> Minecraft.getInstance().getTextureManager().release(
+                ResourceLocation.parse(id)));
         ownedModelIds.clear();
         ownedEntityIds.clear();
         ownedRenderControllerIds.clear();
         ownedAnimationIds.clear();
         ownedControllerIds.clear();
+        ownedParticleIds.clear();
+        ownedTextureIds.clear();
+    }
+
+    private static <T> void removeOwned(Repository<T> registry, Set<String> owned) {
+        if (owned.isEmpty()) return;
+        Map<String, T> remaining = new LinkedHashMap<>(registry.all());
+        owned.forEach(remaining::remove);
+        registry.replaceAll(remaining);
     }
 
     private Publication parse(Map<String, EffectAssetBundle> bundles) throws Exception {
@@ -228,6 +268,7 @@ public final class EyelibBackend implements EffectBackend {
                 JsonElement json;
                 if (path.startsWith("assets/eyelib/models/") && path.endsWith(".json")) {
                     json = parseJson(path, file.getValue());
+                    validateBedrockTextureBounds(json, path);
                     Map<String, Model> models = BedrockGeometryImporter.importJson(json.getAsJsonObject());
                     result.models.putAll(models);
                     requireNamespace(models.keySet(), "geometry");
@@ -258,14 +299,98 @@ public final class EyelibBackend implements EffectBackend {
                     if (!particle.particleEffect().description().identifier().startsWith(NAMESPACE + ":")) {
                         throw new IllegalArgumentException("Particle identifier must use " + NAMESPACE + ": " + path);
                     }
-                    result.particles.put(path, json);
+                    ParticleDefinition definition = ParticleDefinitionAdapter.fromSchema(particle).result()
+                            .orElseThrow(() -> new IllegalArgumentException("Invalid particle components: " + path));
+                    result.particles.put(definition.identifier(), definition);
                 } else if (path.startsWith("assets/eyelib/textures/") && path.endsWith(".png")) {
-                    String relative = path.substring("assets/eyelib/".length());
-                    result.textures.put(NAMESPACE + ":" + relative, file.getValue().clone());
+                    // Bedrock entity textures normally omit .png, while the
+                    // eyelib particle renderer appends .png before asking
+                    // TextureManager for the image. Publish both spellings so
+                    // one uploaded asset works for model and particle paths.
+                    String relative = path.substring("assets/eyelib/".length(), path.length() - ".png".length());
+                    byte[] bytes = file.getValue().clone();
+                    result.textures.put(NAMESPACE + ":" + relative, bytes.clone());
+                    result.textures.put(NAMESPACE + ":" + relative + ".png", bytes);
                 }
             }
         }
         return result;
+    }
+
+    /**
+     * eyelib's model baker samples the texture while classifying cube faces. A
+     * malformed Bedrock box-UV can otherwise reach NativeImage with an out of
+     * range coordinate and crash the render thread. Reject it during reload,
+     * where the command can report a bad asset and keep the client alive.
+     */
+    private static void validateBedrockTextureBounds(JsonElement root, String path) {
+        if (!root.isJsonObject()) return;
+        JsonElement geometries = root.getAsJsonObject().get("minecraft:geometry");
+        if (geometries == null || !geometries.isJsonArray()) return;
+        for (JsonElement geometry : geometries.getAsJsonArray()) {
+            if (!geometry.isJsonObject()) continue;
+            JsonObject object = geometry.getAsJsonObject();
+            JsonObject description = object.getAsJsonObject("description");
+            if (description == null) continue;
+            int textureWidth = positiveInt(description, "texture_width", path);
+            int textureHeight = positiveInt(description, "texture_height", path);
+            JsonElement bones = object.get("bones");
+            if (bones != null && bones.isJsonArray()) {
+                for (JsonElement bone : bones.getAsJsonArray()) {
+                    validateBoneTextureBounds(bone, textureWidth, textureHeight, path);
+                }
+            }
+        }
+    }
+
+    private static void validateBoneTextureBounds(JsonElement bone, int textureWidth, int textureHeight, String path) {
+        if (!bone.isJsonObject()) return;
+        JsonObject object = bone.getAsJsonObject();
+        JsonElement cubes = object.get("cubes");
+        if (cubes != null && cubes.isJsonArray()) {
+            for (JsonElement cube : cubes.getAsJsonArray()) {
+                if (!cube.isJsonObject()) continue;
+                JsonObject c = cube.getAsJsonObject();
+                JsonElement uv = c.get("uv");
+                JsonElement size = c.get("size");
+                if (uv != null && uv.isJsonArray() && size != null && size.isJsonArray()
+                        && uv.getAsJsonArray().size() >= 2 && size.getAsJsonArray().size() >= 3) {
+                    double u = number(uv.getAsJsonArray().get(0), path);
+                    double v = number(uv.getAsJsonArray().get(1), path);
+                    double x = Math.abs(number(size.getAsJsonArray().get(0), path));
+                    double y = Math.abs(number(size.getAsJsonArray().get(1), path));
+                    double z = Math.abs(number(size.getAsJsonArray().get(2), path));
+                    double requiredWidth = u + 2.0 * (x + z);
+                    double requiredHeight = v + y + z;
+                    if (u < 0 || v < 0 || requiredWidth > textureWidth || requiredHeight > textureHeight) {
+                        throw new IllegalArgumentException("Bedrock box UV exceeds texture bounds in " + path
+                                + " (required at least " + Math.ceil(requiredWidth) + "x"
+                                + Math.ceil(requiredHeight) + ", declared " + textureWidth + "x" + textureHeight + ")");
+                    }
+                }
+            }
+        }
+        JsonElement children = object.get("children");
+        if (children != null && children.isJsonArray()) {
+            for (JsonElement child : children.getAsJsonArray()) {
+                validateBoneTextureBounds(child, textureWidth, textureHeight, path);
+            }
+        }
+    }
+
+    private static int positiveInt(JsonObject object, String key, String path) {
+        JsonElement value = object.get(key);
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) return 1;
+        int result = value.getAsInt();
+        if (result <= 0) throw new IllegalArgumentException("Texture dimension must be positive in " + path);
+        return result;
+    }
+
+    private static double number(JsonElement value, String path) {
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalArgumentException("Model coordinate must be numeric in " + path);
+        }
+        return value.getAsDouble();
     }
 
     private static BrClientEntity parseClientEntity(EffectAssetBundle bundle) throws Exception {
@@ -277,7 +402,12 @@ public final class EyelibBackend implements EffectBackend {
             throw new IllegalArgumentException("Client entity identifier must use " + NAMESPACE + ":");
         }
         requireNamespace(entity.geometry().values(), "geometry");
-        requireNamespace(entity.animations().values(), "animation");
+        for (String animation : entity.animations().values()) {
+            if (!animation.startsWith("animation." + NAMESPACE + ".")
+                    && !animation.startsWith("controller.animation." + NAMESPACE + ".")) {
+                throw new IllegalArgumentException("Animation reference outside VFX namespace: " + animation);
+            }
+        }
         requireNamespace(entity.render_controllers(), "controller.render");
         for (String particle : entity.particle_effects().values()) {
             if (!particle.startsWith(NAMESPACE + ":")) {
@@ -309,7 +439,7 @@ public final class EyelibBackend implements EffectBackend {
         final Map<String, BrAnimation> animations = new LinkedHashMap<>();
         final Map<String, BrAnimationControllers> controllers = new LinkedHashMap<>();
         final Map<String, io.github.tt432.eyelib.client.render.controller.RenderControllerEntry> renderControllers = new LinkedHashMap<>();
-        final Map<String, JsonElement> particles = new LinkedHashMap<>();
+        final Map<String, ParticleDefinition> particles = new LinkedHashMap<>();
         final Map<String, byte[]> textures = new LinkedHashMap<>();
     }
 
@@ -318,6 +448,7 @@ public final class EyelibBackend implements EffectBackend {
         final CarrierFactory factory;
         final EffectAssetBundle bundle;
         final long startTick;
+        final Set<String> particleIds = new HashSet<>();
 
         Instance(LivingEntity carrier, CarrierFactory factory, EffectAssetBundle bundle, long startTick) {
             this.carrier = carrier;

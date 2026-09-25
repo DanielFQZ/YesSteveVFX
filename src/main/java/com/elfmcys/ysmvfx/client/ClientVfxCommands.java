@@ -6,6 +6,7 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.ResourceLocationArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterClientCommandsEvent;
@@ -33,11 +34,15 @@ public final class ClientVfxCommands {
                 .then(Commands.literal("reload")
                         .executes(context -> reload(context.getSource())))
                 .then(Commands.literal("play")
-                        .then(Commands.argument("effect", StringArgumentType.word())
+                        .then(Commands.argument("effect", ResourceLocationArgument.id())
+                                .suggests((context, builder) -> {
+                                    VfxClientRuntime.bundles().keySet().forEach(builder::suggest);
+                                    return builder.buildFuture();
+                                })
                                 .then(Commands.argument("slot", StringArgumentType.word())
                                         .executes(context -> play(
                                                 context.getSource(),
-                                                StringArgumentType.getString(context, "effect"),
+                                                ResourceLocationArgument.getId(context, "effect").toString(),
                                                 StringArgumentType.getString(context, "slot"))))))
                 .then(Commands.literal("stop")
                         .then(Commands.argument("slot", StringArgumentType.word())
@@ -61,7 +66,7 @@ public final class ClientVfxCommands {
         VfxClientRuntime.reloadLocal();
         boolean loaded = VfxClientRuntime.isLoaded();
         source.sendSuccess(() -> Component.literal(loaded
-                ? "[yesstevevfx] reloaded local effect packs"
+                ? "[yesstevevfx] reloaded local effect packs (" + VfxClientRuntime.bundles().size() + " effects)"
                 : "[yesstevevfx] failed to load local effect packs"), false);
         return loaded ? 1 : 0;
     }

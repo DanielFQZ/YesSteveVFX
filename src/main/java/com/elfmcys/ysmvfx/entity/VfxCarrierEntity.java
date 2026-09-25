@@ -8,8 +8,12 @@ import net.minecraft.world.level.Level;
 import net.minecraftforge.registries.DeferredRegister;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.RegistryObject;
+import net.minecraftforge.event.entity.EntityAttributeCreationEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
 
 /** Marker armor-stand carrier; eyelib supplies the visible model through RenderData. */
+@Mod.EventBusSubscriber(modid = YesSteveVfx.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD)
 public final class VfxCarrierEntity extends ArmorStand {
     public static final DeferredRegister<EntityType<?>> TYPES =
             DeferredRegister.create(ForgeRegistries.ENTITY_TYPES, YesSteveVfx.MOD_ID);
@@ -20,6 +24,16 @@ public final class VfxCarrierEntity extends ArmorStand {
                     .clientTrackingRange(32)
                     .updateInterval(1)
                     .build(YesSteveVfx.MOD_ID + ":vfx_carrier"));
+
+    @SubscribeEvent
+    public static void createAttributes(EntityAttributeCreationEvent event) {
+        event.put(TYPE.get(), net.minecraft.world.entity.ai.attributes.DefaultAttributes.getSupplier(EntityType.ARMOR_STAND));
+    }
+
+    @Override
+    public boolean shouldRenderAtSqrDistance(double distance) {
+        return distance < 128.0 * 128.0;
+    }
 
     public VfxCarrierEntity(EntityType<? extends ArmorStand> type, Level level) {
         super(type, level);

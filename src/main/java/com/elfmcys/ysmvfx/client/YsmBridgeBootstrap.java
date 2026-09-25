@@ -27,7 +27,7 @@ public final class YsmBridgeBootstrap {
             boolean compatible = (Boolean) result.getClass().getMethod("isCompatible").invoke(result);
             boolean complete = (Boolean) result.getClass().getMethod("coverageComplete").invoke(result);
             if (!compatible || !complete) {
-                LOGGER.warn("YSM was found, but the YesSteveVFX bridge is incompatible; Molang VFX functions are disabled");
+                LOGGER.warn("YSM bridge compatibility check failed; Molang VFX functions are disabled: {}", result);
                 return;
             }
             Class<?> integration = Class.forName(

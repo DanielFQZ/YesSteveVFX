@@ -30,13 +30,13 @@ public final class ClientVfxLifecycleEvents {
             lastLevel = null;
             return;
         }
-        if (lastLevel != null && lastLevel != level) {
+        if (lastLevel != level) {
             VfxClientRuntime.unload();
-        }
-        lastLevel = level;
-        if (!VfxClientRuntime.isLoaded()) {
+            // One automatic attempt per world. Failed files are retried explicitly
+            // by the reload command, rather than parsed and logged twenty times a second.
             VfxClientRuntime.reloadLocal();
         }
+        lastLevel = level;
         VfxClientRuntime.tick(level);
     }
 }

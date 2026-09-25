@@ -1,0 +1,30 @@
+--- a/src/main/java/io/github/tt432/eyelib/bridge/client/render/skinning/adapter/LegacySkinningManager.java
++++ b/src/main/java/io/github/tt432/eyelib/bridge/client/render/skinning/adapter/LegacySkinningManager.java
+@@ -25,6 +25,7 @@
+ import net.minecraftforge.api.distmarker.Dist;
+ import net.minecraftforge.client.event.RegisterShadersEvent;
+ import net.minecraftforge.eventbus.api.SubscribeEvent;
++import net.minecraftforge.fml.ModList;
+ import net.minecraftforge.fml.common.Mod;
+ //?} else {
+ import net.neoforged.api.distmarker.Dist;
+@@ -57,7 +58,18 @@
+ //?}
+ public final class LegacySkinningManager {
+     private static final Logger LOGGER = LoggerFactory.getLogger(LegacySkinningManager.class);
+-    private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("eyelib.gpuSkinning", "true"));
++    private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty(
++            "eyelib.gpuSkinning", defaultGpuSkinningSetting()));
++
++    private static String defaultGpuSkinningSetting() {
++        //? if <1.20.6 {
++        // Oculus 光影管线会屏蔽普通 ShaderInstance 的颜色与深度写入，默认走 CPU 顶点提交。
++        // 按模组存在性回退，可覆盖游戏内切换光影；显式 JVM 参数仍可覆盖此默认值。
++        return ModList.get().isLoaded("oculus") ? "false" : "true";
++        //?} else {
++        return "true";
++        //?}
++    }
+ 
+     /** 蒙皮路径；{@code -Deyelib.gpuSkinning.mode} 控制（auto = compute 优先，VS 兜底）。 */
+     public enum Mode {

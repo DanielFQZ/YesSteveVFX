@@ -1,0 +1,75 @@
+diff --git a/src/main/java/io/github/tt432/eyelib/bridge/particle/adapter/BedrockParticleRenderer.java b/src/main/java/io/github/tt432/eyelib/bridge/particle/adapter/BedrockParticleRenderer.java
+index db8d7c04..f627b898 100644
+--- a/src/main/java/io/github/tt432/eyelib/bridge/particle/adapter/BedrockParticleRenderer.java
++++ b/src/main/java/io/github/tt432/eyelib/bridge/particle/adapter/BedrockParticleRenderer.java
+@@ -101,9 +101,18 @@ public final class BedrockParticleRenderer implements ParticleRenderManager.Part
+             //? if <26.1 {
+             Object renderType = switch (pass.transparency()) {
+                 case SOLID -> net.minecraft.client.renderer.RenderType.entitySolid(texture);
+-                case ALPHA_TEST -> pass.disableCulling()
+-                        ? net.minecraft.client.renderer.RenderType.entityCutoutNoCull(texture)
+-                        : net.minecraft.client.renderer.RenderType.entityCutout(texture);
++                case ALPHA_TEST -> {
++                    //? if <1.20.6 {
++                    // FULL_BRIGHT 只解决 lightmap；原版 cutout / emissive shader 仍按法线压暗 RGB。
++                    // 无 lighting 的粒子使用 Forge 无方向光 shader，同时保留 alpha-test 和深度写入。
++                    if (lighting == null) {
++                        yield UnlitParticleRenderType.cutout(texture, pass.disableCulling());
++                    }
++                    //?}
++                    yield pass.disableCulling()
++                            ? net.minecraft.client.renderer.RenderType.entityCutoutNoCull(texture)
++                            : net.minecraft.client.renderer.RenderType.entityCutout(texture);
++                }
+                 case TRANSLUCENT, ADDITIVE -> net.minecraft.client.renderer.RenderType.entityTranslucent(texture);
+                 case TRANSLUCENT_EMISSIVE -> net.minecraft.client.renderer.RenderType.entityTranslucentEmissive(texture);
+             };
+@@ -266,4 +275,3 @@ public final class BedrockParticleRenderer implements ParticleRenderManager.Part
+                 .orElse(null);
+     }
+ }
+-
+diff --git a/src/main/java/io/github/tt432/eyelib/bridge/particle/adapter/UnlitParticleRenderType.java b/src/main/java/io/github/tt432/eyelib/bridge/particle/adapter/UnlitParticleRenderType.java
+new file mode 100644
+index 00000000..b4aeea9a
+--- /dev/null
++++ b/src/main/java/io/github/tt432/eyelib/bridge/particle/adapter/UnlitParticleRenderType.java
+@@ -0,0 +1,38 @@
++package io.github.tt432.eyelib.bridge.particle.adapter;
++
++//? if <1.20.6 {
++import com.mojang.blaze3d.vertex.DefaultVertexFormat;
++import com.mojang.blaze3d.vertex.VertexFormat;
++import net.minecraft.client.renderer.RenderType;
++import net.minecraft.resources.ResourceLocation;
++import net.minecraftforge.client.ForgeHooksClient;
++
++/** Forge 1.20.1 粒子 alpha-test 通道，去掉实体方向光，保留 lightmap、裁剪和深度行为。 */
++final class UnlitParticleRenderType extends RenderType {
++    // Supplier 在每次绘制时取当前 shader，资源重载后不能继续持有旧 ShaderInstance。
++    private static final ShaderStateShard UNLIT_SHADER = new ShaderStateShard(
++            ForgeHooksClient.ClientEvents::getEntityTranslucentUnlitShader);
++
++    private UnlitParticleRenderType(String name, VertexFormat format, VertexFormat.Mode mode,
++                                   int bufferSize, boolean affectsCrumbling, boolean sortOnUpload,
++                                   Runnable setupState, Runnable clearState) {
++        super(name, format, mode, bufferSize, affectsCrumbling, sortOnUpload, setupState, clearState);
++    }
++
++    // 调用方按 ParticleDefinition 缓存，不再建立永久的纹理路径缓存。
++    static RenderType cutout(ResourceLocation texture, boolean disableCulling) {
++        return create("eyelib_particle_unlit_cutout", DefaultVertexFormat.NEW_ENTITY,
++                VertexFormat.Mode.QUADS, SMALL_BUFFER_SIZE, true, false,
++                CompositeState.builder()
++                        .setShaderState(UNLIT_SHADER)
++                        .setTextureState(new TextureStateShard(texture, false, false))
++                        .setTransparencyState(NO_TRANSPARENCY)
++                        .setDepthTestState(LEQUAL_DEPTH_TEST)
++                        .setCullState(disableCulling ? NO_CULL : CULL)
++                        .setWriteMaskState(COLOR_DEPTH_WRITE)
++                        .setLightmapState(LIGHTMAP)
++                        .setOverlayState(OVERLAY)
++                        .createCompositeState(true));
++    }
++}
++//?}

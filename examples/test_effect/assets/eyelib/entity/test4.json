@@ -1,0 +1,32 @@
+{
+  "minecraft:client_entity": {
+    "description": {
+      "identifier": "yesstevevfx:test4",
+      "materials": {
+        "default": "entity_alphatest"
+      },
+      "textures": {
+        "default": "yesstevevfx:textures/test"
+      },
+      "geometry": {
+        "default": "geometry.yesstevevfx.test"
+      },
+      "animations": {
+        "test": "animation.yesstevevfx.test4"
+      },
+      "particle_effects": {
+        "particle1": "yesstevevfx:test/particle1",
+        "particle2": "yesstevevfx:test/particle2",
+        "particle3": "yesstevevfx:test/particle3"
+      },
+      "render_controllers": [
+        "controller.render.yesstevevfx.test"
+      ],
+      "scripts": {
+        "animate": [
+          "test"
+        ]
+      }
+    }
+  }
+}

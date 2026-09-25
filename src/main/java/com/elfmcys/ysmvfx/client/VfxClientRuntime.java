@@ -8,11 +8,9 @@ import com.elfmcys.ysmvfx.client.noop.UnavailableEffectBackend;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.UUID;
@@ -22,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class VfxClientRuntime {
     private static final Logger LOGGER = LoggerFactory.getLogger(YesSteveVfx.MOD_ID + ".client");
     private static final Map<Key, RunningEffect> ACTIVE = new ConcurrentHashMap<>();
+    private static final VfxActionQueue PENDING = new VfxActionQueue();
     private static volatile Map<String, EffectAssetBundle> bundles = Map.of();
     private static volatile EffectBackend backend = UnavailableEffectBackend.INSTANCE;
     private static volatile boolean loaded;
@@ -34,6 +33,7 @@ public final class VfxClientRuntime {
             throw new IllegalArgumentException("Effect backend must not be null");
         }
         EffectBackend previous = backend;
+        PENDING.clear();
         previous.unload();
         ACTIVE.clear();
         backend = replacement;
@@ -68,6 +68,53 @@ public final class VfxClientRuntime {
 
     public static Map<String, EffectAssetBundle> bundles() {
         return bundles;
+    }
+
+    /** Molang may run while the renderer iterates world entities; capture values only. */
+    public static boolean enqueuePlay(UUID sourceId, String effectId, String slot) {
+        boolean accepted = sourceId != null && effectId != null && bundles.containsKey(effectId)
+                && hasBackend() && PENDING.play(sourceId, effectId, slot);
+        if (!accepted) {
+            LOGGER.info("Rejected queued VFX play effect={} slot={} source={} loaded={} backend={} pending={}",
+                    effectId, slot, sourceId, loaded, hasBackend(), PENDING.size());
+        }
+        return accepted;
+    }
+
+    public static boolean enqueueStop(UUID sourceId, String slot) {
+        boolean accepted = sourceId != null && hasBackend()
+                && PENDING.stop(sourceId, slot, VfxClientRuntime::hasActiveSlot);
+        if (!accepted) {
+            LOGGER.info("Rejected queued VFX stop slot={} source={} backend={} pending={}",
+                    slot, sourceId, hasBackend(), PENDING.size());
+        }
+        return accepted;
+    }
+
+    public static boolean enqueueSet(UUID sourceId, String slot, String name, double value) {
+        boolean accepted = sourceId != null && hasBackend()
+                && PENDING.set(sourceId, slot, name, value, VfxClientRuntime::hasActiveSlot);
+        if (!accepted) {
+            LOGGER.info("Rejected queued VFX set slot={} name={} value={} source={} backend={} pending={}",
+                    slot, name, value, sourceId, hasBackend(), PENDING.size());
+        }
+        return accepted;
+    }
+
+    private static boolean hasActiveSlot(VfxActionQueue.Key key) {
+        return ACTIVE.containsKey(new Key(key.sourceId(), key.slot()));
+    }
+
+    public static int pendingActionCount() {
+        return PENDING.size();
+    }
+
+    public static int activeEffectCount() {
+        return ACTIVE.size();
+    }
+
+    public static boolean hasBackend() {
+        return backend != UnavailableEffectBackend.INSTANCE;
     }
 
     public static boolean play(UUID sourceId, String effectId, String slot) {
@@ -117,8 +164,8 @@ public final class VfxClientRuntime {
     }
 
     public static boolean set(UUID sourceId, String slot, String name, double value) {
-        if (sourceId == null || slot == null || name == null || name.isBlank()
-                || name.length() > 64 || !name.matches("[A-Za-z0-9_.-]+") || !Double.isFinite(value)) {
+        if (sourceId == null || !VfxActionQueue.validSlot(slot)
+                || !VfxActionQueue.validParameter(name, value)) {
             return false;
         }
         RunningEffect running = ACTIVE.get(new Key(sourceId, slot));
@@ -126,6 +173,30 @@ public final class VfxClientRuntime {
     }
 
     public static void tick(ClientLevel level) {
+        // Preserve source order, including play -> set -> stop in one instruction frame.
+        // Never retain YSM entities, execution contexts or AST nodes in this queue.
+        for (VfxActionQueue.Action action : PENDING.drain()) {
+            var key = action.key();
+            try {
+                boolean applied;
+                if (action instanceof VfxActionQueue.Play play) {
+                    applied = play(key.sourceId(), play.effectId(), key.slot());
+                } else if (action instanceof VfxActionQueue.Stop) {
+                    applied = stop(key.sourceId(), key.slot());
+                } else {
+                    var set = (VfxActionQueue.SetParameter) action;
+                    applied = set(key.sourceId(), key.slot(), set.name(), set.value());
+                }
+                if (!applied) {
+                    LOGGER.info("Queued VFX action could not be applied: {} (world={}, loaded={}, bundles={}, backend={})",
+                            action, level, loaded, bundles.size(), hasBackend());
+                } else {
+                    LOGGER.info("Applied queued VFX action: {}", action);
+                }
+            } catch (RuntimeException | LinkageError exception) {
+                LOGGER.error("Could not apply queued VFX action {}", action, exception);
+            }
+        }
         backend.tick(level);
         long now = level.getGameTime();
         for (var entry : ACTIVE.entrySet()) {
@@ -149,6 +220,7 @@ public final class VfxClientRuntime {
     }
 
     public static void stopAll() {
+        PENDING.clear();
         for (RunningEffect running : ACTIVE.values()) {
             backend.stop(running.handle());
         }
@@ -157,6 +229,7 @@ public final class VfxClientRuntime {
     }
 
     public static void unload() {
+        PENDING.clear();
         backend.unload();
         ACTIVE.clear();
         bundles = Map.of();
@@ -164,6 +237,14 @@ public final class VfxClientRuntime {
     }
 
     private static Entity findEntity(ClientLevel level, UUID id) {
+        // The local player is not guaranteed to be present in the renderer's
+        // iterable (first-person and culling paths can omit it), but it is
+        // always part of the client player list.
+        for (var player : level.players()) {
+            if (id.equals(player.getUUID())) {
+                return player;
+            }
+        }
         for (Entity entity : level.entitiesForRendering()) {
             if (id.equals(entity.getUUID())) {
                 return entity;

@@ -1,1 +1,6 @@
-{"format_version":1,"id":"yesstevevfx:demo","duration_ticks":60,"client_entity":"assets/eyelib/entity/demo.json"}
+{
+  "format_version": 1,
+  "id": "yesstevevfx:demo",
+  "duration_ticks": 600,
+  "client_entity": "assets/eyelib/entity/demo.json"
+}
