@@ -141,7 +141,7 @@ async function addFiles(files) {
   await scanAnimations();
   await scanParticles();
   renderFiles();
-  const message = `导入完成：${state.files.size} 个文件，识别到 ${state.animations.length} 个动画`;
+  const message = `导入完成：${state.files.size} 个文件，识别到 ${state.animations.length} 个动画、${state.particles.length} 个粒子`;
   setStatus(message, 'success');
   writeLog(message);
 }
