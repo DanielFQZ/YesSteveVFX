@@ -21,7 +21,9 @@ public final class VfxCarrierRenderer extends LivingEntityRenderer<VfxCarrierEnt
 
     @Override
     public ResourceLocation getTextureLocation(VfxCarrierEntity entity) {
-        return ResourceLocation.fromNamespaceAndPath("yesstevevfx", "empty");
+        // The two-argument constructor is present throughout the 1.20.1 Forge
+        // 47.x line; fromNamespaceAndPath was added only in later mappings.
+        return new ResourceLocation("yesstevevfx", "empty");
     }
 
     public static final class EmptyModel extends EntityModel<VfxCarrierEntity> {

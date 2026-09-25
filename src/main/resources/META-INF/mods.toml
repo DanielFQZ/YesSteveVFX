@@ -13,7 +13,7 @@ description='''A client-side Bedrock model and particle effect runtime for YesSt
 [[dependencies.yesstevevfx]]
 modId="forge"
 mandatory=true
-versionRange="[47.4.16,)"
+versionRange="[47.0.0,48)"
 ordering="NONE"
 side="BOTH"
 

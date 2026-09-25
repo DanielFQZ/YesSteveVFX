@@ -240,7 +240,7 @@ public final class EyelibBackend implements EffectBackend {
         removeOwned(AnimationRegistries.animation(), ownedControllerIds);
         removeOwned(ParticleDefinitionRegistry.store(), ownedParticleIds);
         ownedTextureIds.forEach(id -> Minecraft.getInstance().getTextureManager().release(
-                ResourceLocation.parse(id)));
+                ResourceLocation.tryParse(id)));
         ownedModelIds.clear();
         ownedEntityIds.clear();
         ownedRenderControllerIds.clear();
