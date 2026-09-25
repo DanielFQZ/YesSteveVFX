@@ -121,12 +121,16 @@ function normalizedImportedPath(path) {
 
   const name = clean.split('/').pop();
   const lower = clean.toLowerCase();
+  // Particle sprite PNGs are often exported next to the particle JSON or
+  // named with `.particle.`.  They still belong to the texture registry;
+  // putting them under assets/eyelib/particles makes them invisible to the
+  // runtime publisher, which only publishes assets/eyelib/textures/*.png.
+  if (/\.(png|jpe?g)$/i.test(name)) return `assets/eyelib/textures/${name}`;
   if (lower.endsWith('.geo.json')) return `assets/eyelib/models/${name}`;
   if (lower.endsWith('.animation.json') || lower.endsWith('/animation.json') || lower.includes('/animations/')) return `assets/eyelib/animations/${name}`;
   if (lower.includes('render_controller') || lower.includes('/render_controllers/')) return `assets/eyelib/render_controllers/${name}`;
   if (lower.includes('particle') || lower.includes('/particles/')) return `assets/eyelib/particles/${name}`;
   if (lower.includes('entity') || lower.includes('client_entity')) return `assets/eyelib/entity/${name}`;
-  if (/\.(png|jpe?g)$/i.test(name)) return `assets/eyelib/textures/${name}`;
   return `assets/eyelib/misc/${name}`;
 }
 
@@ -471,6 +475,85 @@ function renderControllerIdentifier(json, fallback) {
   return normalizeRenderControllerIdentifier(controllers && Object.keys(controllers)[0], fallback);
 }
 
+function particleEventNames(animation) {
+  const events = animation?.particle_effects;
+  if (!events || typeof events !== 'object') return [];
+  const values = Array.isArray(events) ? events : Object.values(events);
+  const names = [];
+  for (const value of values) {
+    const name = typeof value === 'string' ? value : value?.effect;
+    if (typeof name === 'string' && name.trim() && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+async function particleAliases(files, particlePaths) {
+  const particles = [];
+  for (const path of [...particlePaths].sort()) {
+    const short = path.split('/').pop().replace(/\.json$/i, '');
+    const json = await parseJson(files.get(path), path);
+    const id = json?.particle_effect?.description?.identifier || json?.['particle_effect']?.description?.identifier;
+    particles.push({ path, short, id: normalizeParticleIdentifier(id, short) });
+  }
+
+  const eventNames = [];
+  const animationPaths = [...files.keys()]
+    .filter((path) => {
+      const lower = path.toLowerCase();
+      return lower.endsWith('.animation.json') || lower.endsWith('/animation.json') || lower.includes('/animations/');
+    })
+    .sort();
+  for (const path of animationPaths) {
+    const json = await parseJson(files.get(path), path);
+    const animations = json?.animations;
+    if (!animations || typeof animations !== 'object' || Array.isArray(animations)) continue;
+    for (const animation of Object.values(animations)) {
+      for (const name of particleEventNames(animation)) {
+        if (!eventNames.includes(name)) eventNames.push(name);
+      }
+    }
+  }
+
+  const aliases = new Map();
+  const assigned = new Set();
+  const findParticle = (name) => particles.findIndex((particle) => {
+    if (particle.short === name || particle.id === name) return true;
+    const idTail = particle.id.includes(':') ? particle.id.slice(particle.id.indexOf(':') + 1) : particle.id;
+    return idTail === name || idTail.endsWith(`/${name}`);
+  });
+
+  // Preserve names that already match a particle file or its identifier.
+  for (const name of eventNames) {
+    const index = findParticle(name);
+    if (index >= 0) {
+      aliases.set(name, particles[index].id);
+      assigned.add(index);
+    }
+  }
+
+  // Blockbench can emit numeric names such as "12", "2", and "3".  Keep
+  // those names as valid aliases and assign them to remaining particles in
+  // first-seen order, so the animation event can still be resolved by eyelib.
+  let unknownOrdinal = 0;
+  for (const name of eventNames) {
+    if (aliases.has(name)) continue;
+    let index = particles.findIndex((particle, candidate) => !assigned.has(candidate));
+    // An exact alias may have already reserved the last particle (for
+    // example `particletest3` in test5), while an earlier numeric alias still
+    // needs to refer to that same resource.  Fall back to the numeric alias's
+    // ordinal instead of dropping the event when all resources are reserved.
+    if (index < 0 && particles.length) index = unknownOrdinal % particles.length;
+    unknownOrdinal++;
+    if (index < 0) {
+      writeLog(`粒子事件“${name}”没有可分配的粒子资源`, true);
+      continue;
+    }
+    aliases.set(name, particles[index].id);
+    assigned.add(index);
+  }
+  return { particles, aliases };
+}
+
 async function generatedEntity(files, effectName, animationId) {
   const paths = [...files.keys()];
   const modelPath = firstPath(paths, (p) => p.endsWith('.geo.json'));
@@ -482,13 +565,9 @@ async function generatedEntity(files, effectName, animationId) {
   const geometry = geometryIdentifier(modelJson, `geometry.yesstevevfx.${effectName}`);
   const renderController = renderControllerIdentifier(renderJson, `controller.render.yesstevevfx.${effectName}`);
   const texture = texturePath ? `yesstevevfx:textures/${withoutExtension(texturePath.split('/textures/')[1])}` : `yesstevevfx:textures/${effectName}`;
-  const particles = {};
-  for (const path of particlePaths) {
-    const short = path.split('/').pop().replace(/\.json$/i, '');
-    const json = await parseJson(files.get(path), path);
-    const id = json?.particle_effect?.description?.identifier || json?.['particle_effect']?.description?.identifier;
-    particles[short] = normalizeParticleIdentifier(id, short);
-  }
+  const { particles: particleResources, aliases } = await particleAliases(files, particlePaths);
+  const particles = Object.fromEntries(particleResources.map((particle) => [particle.short, particle.id]));
+  for (const [alias, id] of aliases) particles[alias] = id;
   const description = {
     identifier: `yesstevevfx:${effectName}`,
     materials: { default: 'entity_alphatest' },
