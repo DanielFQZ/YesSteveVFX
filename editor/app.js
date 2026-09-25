@@ -1,4 +1,11 @@
-const state = { root: null, files: new Map() };
+const state = {
+  root: null,
+  targetRoot: null,
+  targetLabel: '',
+  versions: new Map(),
+  files: new Map(),
+  animations: []
+};
 const $ = (id) => document.getElementById(id);
 
 function writeLog(message, error = false) {
@@ -8,6 +15,12 @@ function writeLog(message, error = false) {
   log.style.color = error ? 'var(--danger)' : '';
 }
 
+function setStatus(message, kind = 'info') {
+  const status = $('operationStatus');
+  status.textContent = message;
+  status.className = `status ${kind}`;
+}
+
 function safeId(value, fallback) {
   const normalized = value.toLowerCase().replace(/[^a-z0-9._-]+/g, '_').replace(/^[-_.]+|[-_.]+$/g, '');
   return normalized || fallback;
@@ -15,8 +28,12 @@ function safeId(value, fallback) {
 
 function updatePreview() {
   const pack = safeId($('packId').value, 'my_effects');
-  const effect = safeId($('effectName').value, 'demo');
-  $('effectIdPreview').textContent = `${pack}:${effect}`;
+  const selected = state.animations.filter((animation) => animation.enabled);
+  const names = selected.length
+    ? selected.slice(0, 2).map((animation) => safeId(animation.effectName, 'effect'))
+    : [safeId($('effectName').value, 'demo')];
+  const suffix = selected.length > 2 ? `（以及另外 ${selected.length - 2} 个）` : '';
+  $('effectIdPreview').textContent = `${pack}:${names.join(', ')}${suffix}`;
 }
 
 function renderFiles() {
@@ -27,7 +44,64 @@ function renderFiles() {
     item.textContent = path;
     return item;
   }));
-  $('savePack').disabled = !paths.length || !state.root;
+  $('savePack').disabled = !paths.length || !state.targetRoot;
+}
+
+function renderAnimations() {
+  const list = $('animationList');
+  list.replaceChildren();
+  if (!state.animations.length) {
+    $('animationSummary').textContent = '没有识别到动画；保存时会使用“无动画时的特效名”生成一个 effect。';
+    const empty = document.createElement('p');
+    empty.className = 'empty';
+    empty.textContent = '导入 .animation.json 后，这里会列出其中的全部动画。';
+    list.append(empty);
+    updatePreview();
+    return;
+  }
+
+  const enabledCount = state.animations.filter((animation) => animation.enabled).length;
+  $('animationSummary').textContent = `识别到 ${state.animations.length} 个动画，当前选中 ${enabledCount} 个。每个选中的动画会生成一个独立 effect。`;
+  for (const animation of state.animations) {
+    const row = document.createElement('div');
+    row.className = 'animation-row';
+
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.checked = animation.enabled;
+    toggle.title = '是否为这个动画生成 effect';
+    toggle.addEventListener('change', () => {
+      animation.enabled = toggle.checked;
+      renderAnimations();
+      renderFiles();
+    });
+
+    const original = document.createElement('code');
+    original.className = 'animation-id';
+    original.textContent = animation.id;
+    original.title = animation.sourcePath;
+
+    const nameLabel = document.createElement('label');
+    nameLabel.className = 'animation-name';
+    nameLabel.textContent = 'Effect 名称';
+    const nameInput = document.createElement('input');
+    nameInput.value = animation.effectName;
+    nameInput.maxLength = 48;
+    nameInput.spellcheck = false;
+    nameInput.addEventListener('input', () => {
+      animation.effectName = nameInput.value;
+      updatePreview();
+    });
+    nameLabel.append(nameInput);
+
+    const source = document.createElement('span');
+    source.className = 'animation-source';
+    source.textContent = animation.sourcePath;
+
+    row.append(toggle, original, nameLabel, source);
+    list.append(row);
+  }
+  updatePreview();
 }
 
 function normalizeSlash(path) {
@@ -46,7 +120,7 @@ function normalizedImportedPath(path) {
   const name = clean.split('/').pop();
   const lower = clean.toLowerCase();
   if (lower.endsWith('.geo.json')) return `assets/eyelib/models/${name}`;
-  if (lower.endsWith('.animation.json') || lower.includes('/animations/')) return `assets/eyelib/animations/${name}`;
+  if (lower.endsWith('.animation.json') || lower.endsWith('/animation.json') || lower.includes('/animations/')) return `assets/eyelib/animations/${name}`;
   if (lower.includes('render_controller') || lower.includes('/render_controllers/')) return `assets/eyelib/render_controllers/${name}`;
   if (lower.includes('particle') || lower.includes('/particles/')) return `assets/eyelib/particles/${name}`;
   if (lower.includes('entity') || lower.includes('client_entity')) return `assets/eyelib/entity/${name}`;
@@ -55,14 +129,18 @@ function normalizedImportedPath(path) {
 }
 
 async function addFiles(files) {
+  if (!files.length) throw new Error('没有读取到可导入的文件');
   for (const item of files) {
     const file = item.file || item;
     const sourcePath = item.path || file.webkitRelativePath || file.name;
     const path = normalizedImportedPath(sourcePath);
     state.files.set(path, file);
   }
+  await scanAnimations();
   renderFiles();
-  writeLog(`导入资源：${state.files.size} 个文件`);
+  const message = `导入完成：${state.files.size} 个文件，识别到 ${state.animations.length} 个动画`;
+  setStatus(message, 'success');
+  writeLog(message);
 }
 
 function readEntry(entry, path = '') {
@@ -110,14 +188,44 @@ function parseJson(file, label) {
 function firstPath(paths, predicate) { return paths.find((path) => predicate(path.toLowerCase())); }
 function withoutExtension(path) { return path.replace(/\.(png|jpe?g)$/i, ''); }
 
+function defaultAnimationName(id) {
+  const tail = id.split('.').pop() || id;
+  return safeId(tail, 'effect');
+}
+
+function uniqueName(name, used) {
+  const base = safeId(name, 'effect');
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) candidate = `${base}_${suffix++}`;
+  used.add(candidate);
+  return candidate;
+}
+
+async function scanAnimations() {
+  const found = [];
+  const used = new Set();
+  const paths = [...state.files.keys()]
+    .filter((path) => {
+      const lower = path.toLowerCase();
+      return lower.endsWith('.animation.json') || lower.endsWith('/animation.json') || lower.includes('/animations/');
+    })
+    .sort();
+  for (const path of paths) {
+    const json = await parseJson(state.files.get(path), path);
+    const animations = json?.animations;
+    if (!animations || typeof animations !== 'object' || Array.isArray(animations)) continue;
+    for (const id of Object.keys(animations)) {
+      found.push({ sourcePath: path, id, effectName: uniqueName(defaultAnimationName(id), used), enabled: true });
+    }
+  }
+  state.animations = found;
+  renderAnimations();
+}
+
 function geometryIdentifier(json, fallback) {
   const entries = json?.['minecraft:geometry'];
   return entries?.[0]?.description?.identifier || fallback;
-}
-
-function animationIdentifier(json, fallback) {
-  const animations = json?.animations;
-  return animations && Object.keys(animations)[0] || fallback;
 }
 
 function renderControllerIdentifier(json, fallback) {
@@ -125,18 +233,15 @@ function renderControllerIdentifier(json, fallback) {
   return controllers && Object.keys(controllers)[0] || fallback;
 }
 
-async function generatedEntity(files, effectName) {
+async function generatedEntity(files, effectName, animationId) {
   const paths = [...files.keys()];
   const modelPath = firstPath(paths, (p) => p.endsWith('.geo.json'));
-  const animationPath = firstPath(paths, (p) => p.endsWith('.animation.json'));
   const renderPath = firstPath(paths, (p) => p.includes('/render_controllers/'));
   const texturePath = firstPath(paths, (p) => p.includes('/textures/') && /\.(png|jpe?g)$/.test(p));
   const particlePaths = paths.filter((p) => p.includes('/particles/') && p.endsWith('.json'));
   const modelJson = modelPath ? await parseJson(files.get(modelPath), modelPath) : null;
-  const animationJson = animationPath ? await parseJson(files.get(animationPath), animationPath) : null;
   const renderJson = renderPath ? await parseJson(files.get(renderPath), renderPath) : null;
   const geometry = geometryIdentifier(modelJson, `geometry.yesstevevfx.${effectName}`);
-  const animation = animationIdentifier(animationJson, `animation.yesstevevfx.${effectName}`);
   const renderController = renderControllerIdentifier(renderJson, `controller.render.yesstevevfx.${effectName}`);
   const texture = texturePath ? `yesstevevfx:textures/${withoutExtension(texturePath.split('/textures/')[1])}` : `yesstevevfx:textures/${effectName}`;
   const particles = {};
@@ -146,20 +251,19 @@ async function generatedEntity(files, effectName) {
     const id = json?.particle_effect?.description?.identifier || json?.['particle_effect']?.description?.identifier;
     particles[short] = id || `yesstevevfx:${effectName}/${short}`;
   }
-  const entity = {
-    'minecraft:client_entity': {
-      description: {
-        identifier: `yesstevevfx:${effectName}`,
-        materials: { default: 'entity_alphatest' },
-        textures: { default: texture },
-        geometry: { default: geometry },
-        animations: { main: animation },
-        particle_effects: particles,
-        render_controllers: [renderController],
-        scripts: { animate: ['main'] }
-      }
-    }
+  const description = {
+    identifier: `yesstevevfx:${effectName}`,
+    materials: { default: 'entity_alphatest' },
+    textures: { default: texture },
+    geometry: { default: geometry },
+    particle_effects: particles,
+    render_controllers: [renderController]
   };
+  if (animationId) {
+    description.animations = { main: animationId };
+    description.scripts = { animate: ['main'] };
+  }
+  const entity = { 'minecraft:client_entity': { description } };
   const output = new Map(files);
   output.set(`assets/eyelib/entity/${effectName}.json`, new Blob([JSON.stringify(entity, null, 2)], { type: 'application/json' }));
   if (!renderPath) {
@@ -169,29 +273,67 @@ async function generatedEntity(files, effectName) {
   return { output, entityPath: `assets/eyelib/entity/${effectName}.json` };
 }
 
+function selectedEffects() {
+  const selected = state.animations.filter((animation) => animation.enabled);
+  if (!selected.length) {
+    return [{ effectName: safeId($('effectName').value, 'demo'), animationId: null }];
+  }
+  const used = new Set();
+  return selected.map((animation, index) => {
+    const effectName = safeId(animation.effectName, `effect_${index + 1}`);
+    if (used.has(effectName)) throw new Error(`动画的 Effect 名称重复：${effectName}`);
+    used.add(effectName);
+    return { effectName, animationId: animation.id };
+  });
+}
+
+async function updateManifest(output, packId, displayName, effectPaths) {
+  let manifest;
+  if (output.has('manifest.json')) {
+    manifest = await parseJson(output.get('manifest.json'), 'manifest.json');
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error('manifest.json 必须是 JSON 对象');
+    if (!Array.isArray(manifest.effects)) manifest.effects = [];
+  } else {
+    manifest = { format_version: 1, pack_id: packId, display_name: displayName, effects: [] };
+  }
+  manifest.format_version ||= 1;
+  manifest.pack_id ||= packId;
+  manifest.display_name ||= displayName;
+  for (const path of effectPaths) if (!manifest.effects.includes(path)) manifest.effects.push(path);
+  output.set('manifest.json', new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }));
+}
+
 async function buildPack() {
   const packId = safeId($('packId').value, 'my_effects');
-  const effectName = safeId($('effectName').value, 'demo');
   const displayName = $('displayName').value.trim() || packId;
   const duration = Math.max(1, Math.min(72000, Number.parseInt($('duration').value, 10) || 120));
+  const effects = selectedEffects();
   const output = new Map(state.files);
   const existingEntity = firstPath([...output.keys()], (p) => p.includes('/assets/eyelib/entity/') || p.includes('/entity/'));
-  const entityPath = existingEntity || `assets/eyelib/entity/${effectName}.json`;
-  if (!existingEntity) {
-    const generated = await generatedEntity(output, effectName);
-    output.clear();
-    for (const [path, value] of generated.output) output.set(path, value);
+  const effectPaths = [];
+
+  for (const effect of effects) {
+    let entityPath = existingEntity;
+    if (!entityPath || effect.animationId) {
+      const generated = await generatedEntity(output, effect.effectName, effect.animationId);
+      output.clear();
+      for (const [path, value] of generated.output) output.set(path, value);
+      entityPath = generated.entityPath;
+    }
+    const effectPath = `effects/${effect.effectName}.json`;
+    effectPaths.push(effectPath);
+    if (!output.has(effectPath)) {
+      const definition = {
+        format_version: 1,
+        id: `${packId}:${effect.effectName}`,
+        duration_ticks: duration,
+        client_entity: entityPath
+      };
+      output.set(effectPath, new Blob([JSON.stringify(definition, null, 2)], { type: 'application/json' }));
+    }
   }
-  if (!output.has('manifest.json')) {
-    const manifest = { format_version: 1, pack_id: packId, display_name: displayName, effects: [`effects/${effectName}.json`] };
-    output.set('manifest.json', new Blob([JSON.stringify(manifest, null, 2)], { type: 'application/json' }));
-  }
-  const effectPath = `effects/${effectName}.json`;
-  if (!output.has(effectPath)) {
-    const effect = { format_version: 1, id: `${packId}:${effectName}`, duration_ticks: duration, client_entity: entityPath };
-    output.set(effectPath, new Blob([JSON.stringify(effect, null, 2)], { type: 'application/json' }));
-  }
-  return { output, packId, effectName };
+  await updateManifest(output, packId, displayName, effectPaths);
+  return { output, packId, effects };
 }
 
 async function directoryForPath(root, path) {
@@ -203,9 +345,9 @@ async function directoryForPath(root, path) {
 }
 
 async function writePack() {
-  if (!state.root) throw new Error('请先选择 .minecraft 客户端目录');
-  const { output, packId, effectName } = await buildPack();
-  let directory = await state.root.getDirectoryHandle('config', { create: true });
+  if (!state.targetRoot) throw new Error('请先选择要写入的客户端版本目录');
+  const { output, packId, effects } = await buildPack();
+  let directory = await state.targetRoot.getDirectoryHandle('config', { create: true });
   directory = await directory.getDirectoryHandle('yesstevevfx', { create: true });
   directory = await directory.getDirectoryHandle('packs', { create: true });
   directory = await directory.getDirectoryHandle(packId, { create: true });
@@ -216,7 +358,57 @@ async function writePack() {
     await writable.write(value instanceof Blob ? value : value);
     await writable.close();
   }
-  return { packId, effectName, count: output.size };
+  return { packId, effects, count: output.size };
+}
+
+async function chooseTargetRoot() {
+  const versionSelect = $('versionSelect');
+  state.versions.clear();
+  state.targetRoot = null;
+  state.targetLabel = '';
+  versionSelect.replaceChildren();
+  try {
+    const versionsDirectory = await state.root.getDirectoryHandle('versions');
+    for await (const [name, handle] of versionsDirectory.entries()) {
+      if (handle.kind === 'directory') state.versions.set(name, handle);
+    }
+  } catch (error) {
+    // 没有 versions/ 时，按非版本隔离客户端处理。
+  }
+
+  const versions = [...state.versions.keys()].sort((a, b) => a.localeCompare(b));
+  if (!versions.length) {
+    versionSelect.disabled = true;
+    versionSelect.append(new Option('未检测到版本隔离，使用当前目录', 'root'));
+    state.targetRoot = state.root;
+    state.targetLabel = state.root.name;
+    $('rootName').textContent = `客户端目录：${state.root.name}`;
+    $('targetHint').textContent = '未检测到 versions/，将直接写入这个目录的 config/yesstevevfx。';
+    return;
+  }
+
+  versionSelect.disabled = false;
+  versionSelect.append(new Option(versions.length === 1 ? '已自动选择唯一版本' : '请选择要写入的版本…', ''));
+  for (const version of versions) versionSelect.append(new Option(version, version));
+  if (versions.length === 1) {
+    versionSelect.value = versions[0];
+    setTargetVersion(versions[0]);
+  } else {
+    $('rootName').textContent = `已选择客户端目录：${state.root.name}`;
+    $('targetHint').textContent = `检测到 ${versions.length} 个版本，请选择目标版本后再保存。`;
+  }
+}
+
+function setTargetVersion(version) {
+  state.targetRoot = state.versions.get(version) || null;
+  state.targetLabel = state.targetRoot ? `${state.root.name}/versions/${version}` : '';
+  $('rootName').textContent = state.targetRoot
+    ? `写入目标：${state.targetLabel}`
+    : `已选择客户端目录：${state.root?.name || ''}`;
+  $('targetHint').textContent = state.targetRoot
+    ? `资源会写入 ${state.targetLabel}/config/yesstevevfx。`
+    : '请选择一个版本目录。';
+  renderFiles();
 }
 
 $('browserNotice').textContent = 'showDirectoryPicker' in window ? '' : '当前浏览器不支持直接保存，请使用 Chrome/Edge';
@@ -224,27 +416,59 @@ $('chooseRoot').addEventListener('click', async () => {
   try {
     if (!('showDirectoryPicker' in window)) throw new Error('浏览器不支持目录写入 API');
     state.root = await window.showDirectoryPicker({ mode: 'readwrite' });
-    $('rootName').textContent = `已选择：${state.root.name}`;
+    await chooseTargetRoot();
+    setStatus('客户端目录已选择，请确认写入目标版本。', 'success');
     renderFiles();
     writeLog(`客户端目录已选择：${state.root.name}`);
-  } catch (error) { writeLog(error.message, true); }
+  } catch (error) {
+    setStatus(`目录选择失败：${error.message}`, 'error');
+    writeLog(error.message, true);
+  }
+});
+
+$('versionSelect').addEventListener('change', (event) => {
+  if (event.target.value) setTargetVersion(event.target.value);
+  else {
+    state.targetRoot = null;
+    renderFiles();
+    $('targetHint').textContent = '请选择一个版本目录。';
+  }
 });
 
 $('selectFiles').addEventListener('click', () => $('fileInput').click());
-$('fileInput').addEventListener('change', (event) => addFiles([...event.target.files]));
+$('fileInput').addEventListener('change', async (event) => {
+  try { await addFiles([...event.target.files]); }
+  catch (error) { setStatus(`导入失败：${error.message}`, 'error'); writeLog(error.message, true); }
+  event.target.value = '';
+});
 $('dropZone').addEventListener('dragover', (event) => { event.preventDefault(); $('dropZone').classList.add('dragging'); });
 $('dropZone').addEventListener('dragleave', () => $('dropZone').classList.remove('dragging'));
 $('dropZone').addEventListener('drop', async (event) => {
   event.preventDefault();
   $('dropZone').classList.remove('dragging');
-  try { await importDrop(event.dataTransfer); } catch (error) { writeLog(`导入失败：${error.message}`, true); }
+  try { await importDrop(event.dataTransfer); }
+  catch (error) { setStatus(`导入失败：${error.message}`, 'error'); writeLog(error.message, true); }
 });
 $('savePack').addEventListener('click', async () => {
   try {
     const result = await writePack();
-    writeLog(`已保存 ${result.count} 个文件到 config/yesstevevfx/packs/${result.packId}，effect=${result.packId}:${result.effectName}`);
-  } catch (error) { writeLog(`保存失败：${error.message}`, true); }
+    const ids = result.effects.map((effect) => `${result.packId}:${effect.effectName}`);
+    const message = `保存完成：${result.count} 个文件、${ids.length} 个 effect 已写入 ${state.targetLabel}/config/yesstevevfx/packs/${result.packId}`;
+    setStatus(message, 'success');
+    writeLog(`${message}（${ids.join(', ')}）`);
+  } catch (error) {
+    setStatus(`保存失败：${error.message}`, 'error');
+    writeLog(error.message, true);
+  }
 });
-$('clearFiles').addEventListener('click', () => { state.files.clear(); renderFiles(); writeLog('已清空导入资源'); });
+$('clearFiles').addEventListener('click', () => {
+  state.files.clear();
+  state.animations = [];
+  renderFiles();
+  renderAnimations();
+  setStatus('已清空导入资源。', 'info');
+  writeLog('已清空导入资源');
+});
 for (const input of [$('packId'), $('effectName')]) input.addEventListener('input', updatePreview);
+renderAnimations();
 updatePreview();

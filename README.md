@@ -72,7 +72,7 @@ YSM 动画指令帧的完整接入示例见 [docs/YSM-INTEGRATION.md](docs/YSM-I
 python -m http.server 8080 -d editor
 ```
 
-然后打开 <http://localhost:8080>，选择客户端的 `.minecraft` 根目录，把 Blockbench/eyelib 资源文件或完整资源目录拖入页面，填写 `pack_id`、特效名称和持续时间，点击“保存到客户端”。Chrome 和 Edge 会通过 File System Access API 将文件写入 `config/yesstevevfx/packs/<pack_id>/`；浏览器首次保存时会请求目录写入权限。编辑器会保留已有的 manifest、effect、client entity 和 render controller，缺少的基础配置会自动生成。
+然后打开 <http://localhost:8080>，选择客户端的 `.minecraft` 根目录，把 Blockbench/eyelib 资源文件或完整资源目录拖入页面。编辑器会读取每个 `.animation.json` 中的全部动画，逐项显示启用开关和可编辑的 Effect 名称，因此一份动画文件可以批量生成多个 effect。Chrome 和 Edge 会通过 File System Access API 将文件写入 `config/yesstevevfx/packs/<pack_id>/`；浏览器首次保存时会请求目录写入权限。检测到 `versions/` 时，编辑器会要求选择具体版本目录后才允许保存，避免写入错误的隔离实例。导入、保存和异常都会显示明确状态，编辑器会保留已有的 manifest、effect、client entity 和 render controller，缺少的基础配置会自动生成。
 
 更详细的操作步骤和当前编辑器支持范围见 [editor/README.md](editor/README.md)。复杂的多实体关系、材质变量和动画 controller 仍可直接编辑生成目录中的 JSON。
 

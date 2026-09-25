@@ -21,7 +21,12 @@
       </div>
       <button id="chooseRoot" class="primary">选择 .minecraft 目录</button>
       <span id="rootName" class="path">尚未选择目录</span>
-      <p class="hint">Chrome 或 Edge 支持直接写入目录。浏览器会在首次选择时请求权限。</p>
+      <label class="version-picker">写入版本
+        <select id="versionSelect" disabled>
+          <option value="">请先选择客户端目录</option>
+        </select>
+      </label>
+      <p id="targetHint" class="hint">Chrome 或 Edge 支持直接写入目录。浏览器会在首次选择时请求权限。</p>
     </section>
 
     <section class="card">
@@ -34,9 +39,9 @@
         <label>显示名称
           <input id="displayName" value="My VFX Pack" maxlength="80">
         </label>
-        <label>Effect 名称
+        <label>Effect 名称（无动画时使用）
           <input id="effectName" value="demo" maxlength="48" spellcheck="false">
-          <small>最终 ID：<code id="effectIdPreview">my_effects:demo</code></small>
+          <small>最终 ID 预览：<code id="effectIdPreview">my_effects:demo</code></small>
         </label>
         <label>持续时间（tick）
           <input id="duration" type="number" min="1" max="72000" value="120">
@@ -56,6 +61,14 @@
       </div>
       <div id="fileSummary" class="summary">还没有导入资源</div>
       <ul id="fileList" class="file-list"></ul>
+      <div class="animation-selection">
+        <div class="subsection-title">
+          <h3>识别到的动画</h3>
+          <span class="hint">可取消不需要的动画，也可以修改生成的 Effect 名称</span>
+        </div>
+        <div id="animationSummary" class="summary">尚未导入 animation.json</div>
+        <div id="animationList" class="animation-list"></div>
+      </div>
     </section>
 
     <section class="card actions">
@@ -66,6 +79,7 @@
 
     <section class="card log-card">
       <div class="section-title"><h2>状态</h2></div>
+      <div id="operationStatus" class="status info" role="status" aria-live="polite">等待操作…</div>
       <pre id="log" aria-live="polite">等待操作…</pre>
     </section>
   </main>
