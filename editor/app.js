@@ -193,6 +193,137 @@ function defaultAnimationName(id) {
   return safeId(tail, 'effect');
 }
 
+/*
+ * eyelib keeps Bedrock resources in shared registries.  Imported Blockbench
+ * files often use the editor defaults (for example geometry.unknown) or omit
+ * particle identifiers altogether; those values are not valid for the
+ * yesstevevfx-owned registries.  Normalize the resource documents while the
+ * pack is being built so every generated entity points at the same IDs that
+ * will be published.
+ */
+function normalizeGeometryIdentifier(id, fallback = 'model') {
+  if (typeof id === 'string' && id.startsWith('geometry.yesstevevfx.')) return id;
+  const raw = typeof id === 'string' ? id.replace(/^geometry\./, '') : '';
+  return `geometry.yesstevevfx.${safeId(raw, fallback)}`;
+}
+
+function normalizeAnimationIdentifier(id, fallback = 'animation') {
+  if (typeof id === 'string' && id.startsWith('animation.yesstevevfx.')) return id;
+  const raw = typeof id === 'string' ? id.replace(/^animation\./, '') : '';
+  return `animation.yesstevevfx.${safeId(raw, fallback)}`;
+}
+
+function normalizeRenderControllerIdentifier(id, fallback = 'effect') {
+  if (typeof id === 'string' && id.startsWith('controller.render.yesstevevfx.')) return id;
+  const raw = typeof id === 'string' ? id.replace(/^controller\.render\./, '') : '';
+  return `controller.render.yesstevevfx.${safeId(raw, fallback)}`;
+}
+
+function normalizeParticleIdentifier(id, shortName) {
+  if (typeof id === 'string' && id.startsWith('yesstevevfx:')) return id;
+  return `yesstevevfx:imported/${safeId(shortName, 'particle')}`;
+}
+
+async function normalizeImportedResources(files) {
+  for (const path of [...files.keys()]) {
+    const lower = path.toLowerCase();
+    if (!lower.endsWith('.json')) continue;
+    const json = await parseJson(files.get(path), path);
+    if (!json || typeof json !== 'object' || Array.isArray(json)) continue;
+    let changed = false;
+
+    if (lower.includes('/models/') && Array.isArray(json['minecraft:geometry'])) {
+      json['minecraft:geometry'].forEach((entry, index) => {
+        const description = entry?.description;
+        if (!description || typeof description !== 'object') return;
+        const next = normalizeGeometryIdentifier(description.identifier, `${safeId(path, 'model')}_${index + 1}`);
+        if (description.identifier !== next) {
+          description.identifier = next;
+          changed = true;
+        }
+      });
+    } else if (lower.includes('/animations/')) {
+      const animations = json.animations;
+      if (animations && typeof animations === 'object' && !Array.isArray(animations)) {
+        const normalized = {};
+        for (const [id, animation] of Object.entries(animations)) {
+          const next = normalizeAnimationIdentifier(id, safeId(path, 'animation'));
+          normalized[next] = animation;
+          changed ||= next !== id;
+        }
+        json.animations = normalized;
+      }
+    } else if (lower.includes('/render_controllers/')) {
+      const controllers = json.render_controllers;
+      if (controllers && typeof controllers === 'object' && !Array.isArray(controllers)) {
+        const normalized = {};
+        for (const [id, controller] of Object.entries(controllers)) {
+          const next = normalizeRenderControllerIdentifier(id, safeId(path, 'effect'));
+          normalized[next] = controller;
+          changed ||= next !== id;
+        }
+        json.render_controllers = normalized;
+      }
+    } else if (lower.includes('/particles/')) {
+      const description = json.particle_effect?.description;
+      if (description && typeof description === 'object') {
+        const short = path.split('/').pop().replace(/\.json$/i, '');
+        const next = normalizeParticleIdentifier(description.identifier, short);
+        if (description.identifier !== next) {
+          description.identifier = next;
+          changed = true;
+        }
+      }
+    } else if (lower.includes('/entity/')) {
+      const description = json['minecraft:client_entity']?.description;
+      if (description && typeof description === 'object') {
+        if (typeof description.identifier === 'string' && !description.identifier.startsWith('yesstevevfx:')) {
+          description.identifier = `yesstevevfx:${safeId(description.identifier.split(':').pop(), safeId(path, 'effect'))}`;
+          changed = true;
+        }
+        if (description.geometry && typeof description.geometry === 'object') {
+          for (const [key, value] of Object.entries(description.geometry)) {
+            const next = normalizeGeometryIdentifier(value, safeId(path, 'model'));
+            if (value !== next) {
+              description.geometry[key] = next;
+              changed = true;
+            }
+          }
+        }
+        if (description.animations && typeof description.animations === 'object') {
+          for (const [key, value] of Object.entries(description.animations)) {
+            const next = normalizeAnimationIdentifier(value, safeId(path, 'animation'));
+            if (value !== next) {
+              description.animations[key] = next;
+              changed = true;
+            }
+          }
+        }
+        if (Array.isArray(description.render_controllers)) {
+          description.render_controllers = description.render_controllers.map((value) => {
+            const next = normalizeRenderControllerIdentifier(value, safeId(path, 'effect'));
+            if (value !== next) changed = true;
+            return next;
+          });
+        }
+        if (description.particle_effects && typeof description.particle_effects === 'object') {
+          for (const [key, value] of Object.entries(description.particle_effects)) {
+            const next = normalizeParticleIdentifier(value, key);
+            if (value !== next) {
+              description.particle_effects[key] = next;
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+
+    if (changed) {
+      files.set(path, new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' }));
+    }
+  }
+}
+
 function uniqueName(name, used) {
   const base = safeId(name, 'effect');
   let candidate = base;
@@ -225,12 +356,12 @@ async function scanAnimations() {
 
 function geometryIdentifier(json, fallback) {
   const entries = json?.['minecraft:geometry'];
-  return entries?.[0]?.description?.identifier || fallback;
+  return normalizeGeometryIdentifier(entries?.[0]?.description?.identifier, fallback);
 }
 
 function renderControllerIdentifier(json, fallback) {
   const controllers = json?.render_controllers;
-  return controllers && Object.keys(controllers)[0] || fallback;
+  return normalizeRenderControllerIdentifier(controllers && Object.keys(controllers)[0], fallback);
 }
 
 async function generatedEntity(files, effectName, animationId) {
@@ -249,7 +380,7 @@ async function generatedEntity(files, effectName, animationId) {
     const short = path.split('/').pop().replace(/\.json$/i, '');
     const json = await parseJson(files.get(path), path);
     const id = json?.particle_effect?.description?.identifier || json?.['particle_effect']?.description?.identifier;
-    particles[short] = id || `yesstevevfx:${effectName}/${short}`;
+    particles[short] = normalizeParticleIdentifier(id, short);
   }
   const description = {
     identifier: `yesstevevfx:${effectName}`,
@@ -260,7 +391,7 @@ async function generatedEntity(files, effectName, animationId) {
     render_controllers: [renderController]
   };
   if (animationId) {
-    description.animations = { main: animationId };
+    description.animations = { main: normalizeAnimationIdentifier(animationId, effectName) };
     description.scripts = { animate: ['main'] };
   }
   const entity = { 'minecraft:client_entity': { description } };
@@ -309,6 +440,7 @@ async function buildPack() {
   const duration = Math.max(1, Math.min(72000, Number.parseInt($('duration').value, 10) || 120));
   const effects = selectedEffects();
   const output = new Map(state.files);
+  await normalizeImportedResources(output);
   const existingEntity = firstPath([...output.keys()], (p) => p.includes('/assets/eyelib/entity/') || p.includes('/entity/'));
   const effectPaths = [];
 
