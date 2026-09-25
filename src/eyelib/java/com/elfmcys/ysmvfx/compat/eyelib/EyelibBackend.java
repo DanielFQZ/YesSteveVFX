@@ -311,6 +311,16 @@ public final class EyelibBackend implements EffectBackend {
                     byte[] bytes = file.getValue().clone();
                     result.textures.put(NAMESPACE + ":" + relative, bytes.clone());
                     result.textures.put(NAMESPACE + ":" + relative + ".png", bytes);
+                } else if (path.startsWith("assets/eyelib/particles/") && path.endsWith(".png")) {
+                    // Older editor exports placed particle sprite PNGs beside
+                    // the particle JSON. Keep those packs loadable while the
+                    // editor writes new images to assets/eyelib/textures/.
+                    String relative = path.substring("assets/eyelib/particles/".length(), path.length() - ".png".length());
+                    byte[] bytes = file.getValue().clone();
+                    result.textures.put(NAMESPACE + ":particles/" + relative, bytes.clone());
+                    result.textures.put(NAMESPACE + ":particles/" + relative + ".png", bytes.clone());
+                    result.textures.put(NAMESPACE + ":textures/" + relative, bytes.clone());
+                    result.textures.put(NAMESPACE + ":textures/" + relative + ".png", bytes);
                 }
             }
         }
