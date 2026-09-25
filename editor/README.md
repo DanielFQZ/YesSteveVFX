@@ -18,8 +18,9 @@ python -m http.server 8080 -d editor
 2. 填写 `pack_id`、显示名称和持续时间。Effect 名称只在没有动画时作为备用名称。
 3. 把 Blockbench 导出的 `.geo.json`、`.animation.json`、粒子 JSON、render controller 和纹理拖进导入区，也可以选择一个完整资源目录。导入完成后页面会显示成功状态和文件数量。
 4. 编辑器会解析所有 `.animation.json` 的 `animations` 键，把每个动画列出来。取消不需要的动画，并为需要的动画修改 Effect 名称；同一批导入资源可以一次生成多个 effect。
-5. 点击“保存到客户端”。编辑器会创建 `config/yesstevevfx/packs/<pack_id>/`，补齐 manifest、effect 和缺少的 client entity/render controller，并报告写入的版本、文件数和 effect ID。
-6. 在游戏中执行 `/vfx_client reload`，再使用生成的 effect ID 播放。
+5. 导入粒子 JSON 后，编辑器会列出每个粒子的贴图引用。默认会读取 JSON 中的 `basic_render_parameters.texture`；如果它是旧的相对路径，工具会按文件名或包含 `particle` 的纹理自动匹配。需要时可以在界面中手动选择已导入的 PNG。
+6. 点击“保存到客户端”。编辑器会创建 `config/yesstevevfx/packs/<pack_id>/`，补齐 manifest、effect 和缺少的 client entity/render controller，并报告写入的版本、文件数和 effect ID。
+7. 在游戏中执行 `/vfx_client reload`，再使用生成的 effect ID 播放。
 
 完整的 Molang 指令帧规范见 [`../docs/MOLANG-REFERENCE.md`](../docs/MOLANG-REFERENCE.md)。
 

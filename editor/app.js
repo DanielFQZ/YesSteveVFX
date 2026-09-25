@@ -4,7 +4,9 @@ const state = {
   targetLabel: '',
   versions: new Map(),
   files: new Map(),
-  animations: []
+  animations: [],
+  particles: [],
+  particleTextures: new Map()
 };
 const $ = (id) => document.getElementById(id);
 
@@ -137,6 +139,7 @@ async function addFiles(files) {
     state.files.set(path, file);
   }
   await scanAnimations();
+  await scanParticles();
   renderFiles();
   const message = `导入完成：${state.files.size} 个文件，识别到 ${state.animations.length} 个动画`;
   setStatus(message, 'success');
@@ -225,6 +228,7 @@ function normalizeParticleIdentifier(id, shortName) {
 }
 
 async function normalizeImportedResources(files) {
+  const texturePaths = importedTexturePaths(files);
   for (const path of [...files.keys()]) {
     const lower = path.toLowerCase();
     if (!lower.endsWith('.json')) continue;
@@ -272,6 +276,16 @@ async function normalizeImportedResources(files) {
         if (description.identifier !== next) {
           description.identifier = next;
           changed = true;
+        }
+        const renderParameters = description.basic_render_parameters;
+        if (renderParameters && typeof renderParameters === 'object') {
+          const current = typeof renderParameters.texture === 'string' ? renderParameters.texture : '';
+          const selected = state.particleTextures.get(path);
+          const resolved = selected || autoParticleTexture(current, texturePaths) || current;
+          if (resolved && current !== resolved) {
+            renderParameters.texture = resolved;
+            changed = true;
+          }
         }
       }
     } else if (lower.includes('/entity/')) {
@@ -352,6 +366,99 @@ async function scanAnimations() {
   }
   state.animations = found;
   renderAnimations();
+}
+
+function textureResourceId(path) {
+  const relative = path.split('/textures/')[1];
+  return `yesstevevfx:textures/${withoutExtension(relative)}`;
+}
+
+function importedTexturePaths(files = state.files) {
+  return [...files.keys()]
+    .filter((path) => /\/textures\/.*\.(png|jpe?g)$/i.test(path))
+    .sort();
+}
+
+function autoParticleTexture(reference, texturePaths) {
+  if (typeof reference !== 'string' || !reference.trim()) return null;
+  if (reference.startsWith('yesstevevfx:textures/')) return reference;
+  const stem = reference.split('/').pop().replace(/\.(png|jpe?g)$/i, '').toLowerCase();
+  const exact = texturePaths.find((path) => {
+    const name = path.split('/').pop().replace(/\.(png|jpe?g)$/i, '').toLowerCase();
+    return name === stem;
+  });
+  if (exact) return textureResourceId(exact);
+  const particleTextures = texturePaths.filter((path) => /particle/i.test(path.split('/').pop()));
+  return particleTextures.length === 1 ? textureResourceId(particleTextures[0]) : null;
+}
+
+async function scanParticles() {
+  const texturePaths = importedTexturePaths();
+  const found = [];
+  for (const path of [...state.files.keys()].filter((value) => /\/particles\/.*\.json$/i.test(value)).sort()) {
+    const json = await parseJson(state.files.get(path), path);
+    const description = json?.particle_effect?.description;
+    if (!description || typeof description !== 'object') continue;
+    const currentTexture = typeof description.basic_render_parameters?.texture === 'string'
+      ? description.basic_render_parameters.texture
+      : '';
+    found.push({
+      sourcePath: path,
+      name: path.split('/').pop(),
+      currentTexture,
+      autoTexture: autoParticleTexture(currentTexture, texturePaths),
+      texturePaths
+    });
+  }
+  state.particles = found;
+  renderParticles();
+}
+
+function renderParticles() {
+  const list = $('particleList');
+  if (!list) return;
+  list.replaceChildren();
+  if (!state.particles.length) {
+    $('particleSummary').textContent = '没有识别到粒子 JSON。';
+    const empty = document.createElement('p');
+    empty.className = 'empty';
+    empty.textContent = '导入 assets/eyelib/particles/*.json 后，可以为每个粒子选择贴图。';
+    list.append(empty);
+    return;
+  }
+  $('particleSummary').textContent = `识别到 ${state.particles.length} 个粒子。可选择自动匹配或手动指定客户端内的 PNG。`;
+  for (const particle of state.particles) {
+    const row = document.createElement('div');
+    row.className = 'particle-row';
+    const name = document.createElement('code');
+    name.textContent = particle.name;
+    name.title = particle.sourcePath;
+    const label = document.createElement('label');
+    label.textContent = '贴图引用';
+    const select = document.createElement('select');
+    const autoLabel = particle.autoTexture
+      ? `自动：${particle.autoTexture}`
+      : `自动：保留 ${particle.currentTexture || '未设置'}`;
+    select.append(new Option(autoLabel, ''));
+    for (const path of particle.texturePaths) {
+      select.append(new Option(`手动：${path.split('/').pop()}`, textureResourceId(path)));
+    }
+    select.value = state.particleTextures.get(particle.sourcePath) || '';
+    select.addEventListener('change', () => {
+      if (select.value) state.particleTextures.set(particle.sourcePath, select.value);
+      else state.particleTextures.delete(particle.sourcePath);
+      setStatus(`已设置 ${particle.name} 的粒子贴图引用`, 'success');
+      writeLog(`${particle.name} 贴图：${select.value || autoLabel}`);
+    });
+    label.append(select);
+    const source = document.createElement('span');
+    source.className = 'particle-source';
+    source.textContent = particle.autoTexture
+      ? `自动匹配到 ${particle.autoTexture}`
+      : '未找到可自动匹配的本地贴图';
+    row.append(name, label, source);
+    list.append(row);
+  }
 }
 
 function geometryIdentifier(json, fallback) {
@@ -596,11 +703,15 @@ $('savePack').addEventListener('click', async () => {
 $('clearFiles').addEventListener('click', () => {
   state.files.clear();
   state.animations = [];
+  state.particles = [];
+  state.particleTextures.clear();
   renderFiles();
   renderAnimations();
+  renderParticles();
   setStatus('已清空导入资源。', 'info');
   writeLog('已清空导入资源');
 });
 for (const input of [$('packId'), $('effectName')]) input.addEventListener('input', updatePreview);
 renderAnimations();
+renderParticles();
 updatePreview();
