@@ -17,7 +17,7 @@ eyelib 当前仍是实体驱动的渲染管线，因此“eyelib 独立渲染”
 
 YesSteveVFX 自己拥有特效定义、特效实例、生命周期、资源适配和渲染调度；具体 Bedrock 模型与粒子绘制交给 eyelib。这样 YSM 没安装时 VFX 仍可加载本地特效和测试命令；YSM 安装时才启用 Molang 和动画指令联动。
 
-当前 YesSteveVFX 的代码是 portal/hole 效果原型，包含 \`ServerPortalManager\`、\`ClientPortalManager\`、\`PortalRenderer\` 和 portal 命令，与新目标无关。开始实现时可以整体替换；在删除前保留一次 Git 提交即可。
+早期深度场景原型已经从运行时代码、命令和网络协议中移除；其历史提交仍可通过 Git 查看。当前实现只保留模型、动画和粒子 VFX 运行时。
 
 ## 推荐分层
 
@@ -277,7 +277,7 @@ Molang effect function 必须始终经过 \`allowEmitting\`，并限制函数参
 
 ## 实施顺序
 
-1. 在 YesSteveVFX 先替换 portal 原型，完成 \`VfxAssetStore\`、\`VfxDefinition\`、\`VfxInstance\`、\`VfxWorldState\`、\`VfxApi\` 和图片/GIF MVP。
+1. 已在 YesSteveVFX 完成 \`VfxAssetSource\`、\`EffectDefinition\`、\`EffectAssetBundle\`、\`VfxClientRuntime\`、\`VfxApi\` 和本地资源 reload/play MVP。
 2. 在 YSM 增加只读的 Molang binding contributor/event；先只支持 \`vfx.play/stop/set/exists\`，用 entity root 锚点。
 3. 把 YSM 通用 Asset Container 提取成稳定只读 API，VFX 增加 \`yessteve.vfx\` schema reader；本地目录和 \`.ysm\` 容器都转成同一 \`EffectAssetBundle\`。
 4. 加入 Bedrock/Molang emitter 和尾迹，补充 frame/command 去重测试。

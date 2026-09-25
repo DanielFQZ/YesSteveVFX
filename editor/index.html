@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YesSteveVFX 可视化编辑器</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">YesSteveVFX / Forge 1.20.1</p>
+      <h1>特效包编辑器</h1>
+      <p class="lead">拖入 Blockbench 和 eyelib 资源，填写基本信息后直接保存到客户端的 <code>config/yesstevevfx/packs</code>。</p>
+    </header>
+
+    <section class="card setup">
+      <div class="section-title">
+        <h2>1. 选择客户端目录</h2>
+        <span id="browserNotice" class="notice"></span>
+      </div>
+      <button id="chooseRoot" class="primary">选择 .minecraft 目录</button>
+      <span id="rootName" class="path">尚未选择目录</span>
+      <p class="hint">Chrome 或 Edge 支持直接写入目录。浏览器会在首次选择时请求权限。</p>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>2. 填写特效信息</h2></div>
+      <div class="form-grid">
+        <label>Pack ID
+          <input id="packId" value="my_effects" maxlength="32" spellcheck="false">
+          <small>小写字母、数字、点、下划线和短横线</small>
+        </label>
+        <label>显示名称
+          <input id="displayName" value="My VFX Pack" maxlength="80">
+        </label>
+        <label>Effect 名称
+          <input id="effectName" value="demo" maxlength="48" spellcheck="false">
+          <small>最终 ID：<code id="effectIdPreview">my_effects:demo</code></small>
+        </label>
+        <label>持续时间（tick）
+          <input id="duration" type="number" min="1" max="72000" value="120">
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>3. 导入资源</h2>
+        <button id="selectFiles" class="secondary">选择文件或目录</button>
+        <input id="fileInput" type="file" multiple webkitdirectory hidden>
+      </div>
+      <div id="dropZone" class="drop-zone" tabindex="0">
+        <strong>把资源文件或资源目录拖到这里</strong>
+        <span>支持 .json、.geo.json、.animation.json、粒子文件和 PNG 纹理</span>
+      </div>
+      <div id="fileSummary" class="summary">还没有导入资源</div>
+      <ul id="fileList" class="file-list"></ul>
+    </section>
+
+    <section class="card actions">
+      <button id="savePack" class="primary" disabled>保存到客户端</button>
+      <button id="clearFiles" class="secondary">清空资源</button>
+      <p class="hint">如果导入的是完整 pack，工具会保留已有的 manifest、effect 和 client entity；缺少的配置会自动补齐。</p>
+    </section>
+
+    <section class="card log-card">
+      <div class="section-title"><h2>状态</h2></div>
+      <pre id="log" aria-live="polite">等待操作…</pre>
+    </section>
+  </main>
+  <script src="app.js" defer></script>
+</body>
+</html>

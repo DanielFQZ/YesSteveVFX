@@ -64,6 +64,18 @@ config/yesstevevfx/packs/<pack_id>/
 
 YSM 动画指令帧的完整接入示例见 [docs/YSM-INTEGRATION.md](docs/YSM-INTEGRATION.md)，Molang 函数参数和返回值规范见 [docs/MOLANG-REFERENCE.md](docs/MOLANG-REFERENCE.md)。
 
+## Web 可视化编辑器
+
+仓库提供一个无需 Node.js 的静态编辑器，适合不熟悉 JSON 的用户组装单个模型/动画/粒子特效包。启动本地静态服务器：
+
+```powershell
+python -m http.server 8080 -d editor
+```
+
+然后打开 <http://localhost:8080>，选择客户端的 `.minecraft` 根目录，把 Blockbench/eyelib 资源文件或完整资源目录拖入页面，填写 `pack_id`、特效名称和持续时间，点击“保存到客户端”。Chrome 和 Edge 会通过 File System Access API 将文件写入 `config/yesstevevfx/packs/<pack_id>/`；浏览器首次保存时会请求目录写入权限。编辑器会保留已有的 manifest、effect、client entity 和 render controller，缺少的基础配置会自动生成。
+
+更详细的操作步骤和当前编辑器支持范围见 [editor/README.md](editor/README.md)。复杂的多实体关系、材质变量和动画 controller 仍可直接编辑生成目录中的 JSON。
+
 ## 控制接口
 
 YSM bridge 在包含 YSM 的客户端构件中注册以下 Molang 函数。函数返回 `1` 表示请求已接受，返回 `0` 表示参数、实体或 effect 不可用：
@@ -114,5 +126,3 @@ YSM 和 eyelib 是可选 source set。拿到对应的 1.20.1 JAR 后，使用：
 - stop 会停止特效实例和它跟踪的粒子发射器；已经生成的粒子会按自己的寿命结束。
 - 换世界、退出服务器和 effect duration 到期时都会移除 carrier。
 - `VfxApi` 可供其他 MOD 直接调用 `play(UUID, effectId, slot)`、`stop(UUID, slot)` 和 `set(UUID, slot, name, value)`，在专用服务器上会安全返回 `false`。
-
-旧的 portal 原型仍保留在源码中，供深度缓冲实验参考；新的模型加粒子 effect 运行时不依赖 portal 系统。
