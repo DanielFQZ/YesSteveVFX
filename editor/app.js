@@ -209,20 +209,32 @@ function defaultAnimationName(id) {
  * will be published.
  */
 function normalizeGeometryIdentifier(id, fallback = 'model') {
-  if (typeof id === 'string' && id.startsWith('geometry.yesstevevfx.')) return id;
-  const raw = typeof id === 'string' ? id.replace(/^geometry\./, '') : '';
+  let raw = typeof id === 'string' ? id.trim() : '';
+  while (raw.startsWith('geometry.yesstevevfx.')) {
+    raw = raw.slice('geometry.yesstevevfx.'.length);
+  }
+  raw = raw.replace(/^geometry\./, '');
   return `geometry.yesstevevfx.${safeId(raw, fallback)}`;
 }
 
 function normalizeAnimationIdentifier(id, fallback = 'animation') {
-  if (typeof id === 'string' && id.startsWith('animation.yesstevevfx.')) return id;
-  const raw = typeof id === 'string' ? id.replace(/^animation\./, '') : '';
+  let raw = typeof id === 'string' ? id.trim() : '';
+  while (raw.startsWith('animation.yesstevevfx.')) {
+    raw = raw.slice('animation.yesstevevfx.'.length);
+  }
+  raw = raw.replace(/^animation\./, '');
   return `animation.yesstevevfx.${safeId(raw, fallback)}`;
 }
 
 function normalizeRenderControllerIdentifier(id, fallback = 'effect') {
-  if (typeof id === 'string' && id.startsWith('controller.render.yesstevevfx.')) return id;
-  const raw = typeof id === 'string' ? id.replace(/^controller\.render\./, '') : '';
+  // Imports can already contain a namespace, and a previously generated pack
+  // may even contain the namespace twice. Strip every known prefix before
+  // rebuilding one canonical identifier so rebuilding a pack is idempotent.
+  let raw = typeof id === 'string' ? id.trim() : '';
+  while (raw.startsWith('controller.render.yesstevevfx.')) {
+    raw = raw.slice('controller.render.yesstevevfx.'.length);
+  }
+  raw = raw.replace(/^controller\.render\./, '');
   return `controller.render.yesstevevfx.${safeId(raw, fallback)}`;
 }
 

@@ -1,7 +1,7 @@
 modLoader="javafml"
 loaderVersion="[47,)"
 license="MIT"
-issueTrackerURL="https://example.invalid/ysm-vfx/issues"
+issueTrackerURL="https://github.com/DanielFQZ/YesSteveVFX/issues"
 
 [[mods]]
 modId="yesstevevfx"
