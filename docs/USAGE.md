@@ -2,6 +2,8 @@
 
 YesSteveVFX 的一个特效由一个 effect 定义和一组 eyelib Bedrock 资源组成。资源放在客户端游戏目录的 `config/yesstevevfx/packs/<pack_id>/` 下；修改资源后重启客户端或执行 `/vfx_client reload`。
 
+客户端需要 Minecraft 1.20.1。YesSteveVFX 的当前构件支持 Forge 47.0.0 及之后的 47.x 版本；如果整合包同时安装了 YSM 或 eyelib，还必须满足它们各自声明的 Forge 最低版本。
+
 YSM 动画控制的 Molang 函数规范、Blockbench 指令帧写法和排错日志见 [MOLANG-REFERENCE.md](MOLANG-REFERENCE.md)。
 
 ## 目录结构

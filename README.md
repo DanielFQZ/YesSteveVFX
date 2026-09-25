@@ -1,6 +1,6 @@
 # YesSteveVFX
 
-YesSteveVFX 是面向 Forge 1.20.1 的客户端特效运行时。一个 effect 由 Bedrock 模型、动画、render controller、纹理和粒子资源组成；YesSteveVFX 管理配置、实例生命周期和 carrier，eyelib 负责实际的 Bedrock 模型、动画和粒子渲染，YSM 只负责通过 Molang 指令帧控制播放。
+YesSteveVFX 是面向 Forge 1.20.1 的客户端特效运行时。一个 effect 由 Bedrock 模型、动画、render controller、纹理和粒子资源组成；YesSteveVFX 管理配置、实例生命周期和 carrier，eyelib 负责实际的 Bedrock 模型、动画和粒子渲染，YSM 只负责通过 Molang 指令帧控制播放。当前构件支持 Forge 1.20.1 的 47.0.0 至 47.x 版本。
 
 当前仓库包含一个可用于联调的测试版本实现。它以关闭 Oculus 光影作为基础验收环境，需要 Forge 1.20.1、eyelib；要使用 YSM 动画控制时还需要安装 YSM。
 
@@ -117,6 +117,17 @@ YSM 和 eyelib 是可选 source set。拿到对应的 1.20.1 JAR 后，使用：
   -PysmJar='D:\libs\ysm-1.20.1.jar' `
   -PeyelibJar='D:\libs\eyelib-1.20.1.jar'
 ```
+
+默认构建使用 Forge `1.20.1-47.4.16`。验证较低的 1.20.1 Forge 时，可以切换构建目标，例如：
+
+```powershell
+./gradlew.bat build `
+  -PforgeVersion='1.20.1-47.1.0' `
+  -PysmJar='D:\libs\ysm-1.20.1.jar' `
+  -PeyelibJar='D:\libs\eyelib-1.20.1.jar'
+```
+
+构建目标必须仍是 Minecraft 1.20.1；Forge 版本范围由 JAR 的 `mods.toml` 声明为 `[47.0.0,48)`。eyelib 和 YSM 自身的 Forge 依赖范围仍需分别满足，降低 Forge 版本时应同时检查这两个 MOD 的元数据。
 
 不传这两个属性时，核心构件不链接任何 YSM 或 eyelib 私有类；传入属性时，bridge 类会被编译并合并进最终 JAR。当前仓库已用 JDK 21 验证完整构建和资源加载测试。eyelib 自身构建若因其 Stonecutter/Gradle 环境失败，需要先由 eyelib 提供可用构件，VFX 代码不应复制 eyelib 的渲染实现。
 
