@@ -23,3 +23,77 @@ YSM 通过 Molang 指令帧调用 `ctrl.vfx_play`、`ctrl.vfx_set` 和 `ctrl.vfx
 ## 阶段四：性能与兼容
 
 在基础播放和辉光通过验收后，再处理资源重载、窗口尺寸变化、多个实例的 GPU/CPU 开销，以及 Oculus/特定光影包的可选适配。未启用辉光时不创建额外帧缓冲，也不执行第二次模型或粒子绘制。
+
+## 阶段二点五：多模型编辑工作流与粒子别名稳定化
+
+### 多模型包
+
+Blockbench 插件不在导入时一次性打开所有模型。打开包后先显示模型选择窗口，每个条目按 `geo.json 路径 + geometry 下标` 标识，并显示 geometry identifier、骨骼/cube 数、关联 effect、关联 animation.json、动画数量、动画名称和粒子数量。用户选择一个模型后才创建对应的 Blockbench 标签页；该标签页继续使用源 `geo.json` 的原生保存路径。
+
+VFX 菜单增加“切换模型/打开其他模型”。已打开的模型复用已有 session，未打开的模型新建 session。这样可以支持一个包包含多个 geo 文件，也支持一个 geo 文件包含多个 `minecraft:geometry`，又不会一次创建大量不可区分的标签页。
+
+模型关联索引的来源优先级如下：
+
+1. `manifest.json` → effect JSON → client entity 的 `geometry` 和 `animations`；
+2. client entity 的 geometry identifier 与扫描到的 geometry 条目精确匹配；
+3. 仅有原始资源而没有实体绑定时，显示“未建立运行时关联”的警告，要求用户手动选择；
+4. 禁止在存在多个候选模型时静默选第一个模型。
+
+当前运行时一个 effect 仍对应一个 `geometry.default`。因此“一个包包含多个模型”可以直接支持，但“一个 effect 同时组合多个模型”需要未来扩展为多个模型实例或多个 carrier，暂不与本阶段混合。
+
+### 运行时资产关联
+
+动画 JSON 不记录自己属于哪个模型，它只保存骨骼动画和粒子事件别名。真正的运行时关联由 JSON 链完成：
+
+```text
+manifest.json
+  -> effects/*.json
+    -> assets/eyelib/entity/*.json
+      -> geometry / animations / particle_effects / textures / render_controllers
+```
+
+动画中的 `particle_effects` 只写短别名，例如 `slash`；client entity 的 `particle_effects.slash` 才把它映射到实际粒子 identifier。`vfx-project.json` 是编辑器配置，只保存源文件绑定、用户选择和粒子贴图关系，运行时不会依赖它。
+
+### 粒子别名问题的结论
+
+已核对 Blockbench 当前源码：
+
+- `js/animations/keyframe.js` 的 `changeKeyframeFile` 在没有现成 `effect` 时，会用粒子文件名去掉扩展名并清理字符后生成别名；
+- `js/animations/animation_controllers.js` 使用相同的回退逻辑；
+- `js/formats/bedrock/bedrock.js` 只有在加载 client entity 时，才能通过 `description.particle_effects` 把动画短别名解析到粒子 JSON；
+- `js/formats/bedrock/bedrock_animation.js` 导出时基本原样序列化 `data_point.effect`，不会在导出阶段替换成粒子 identifier。
+
+所以问题通常不是随机数，而是 Blockbench 在没有完整 client entity 上下文时，把文件名或内部预览名称当成了动画事件别名。动画中出现 `12`、`2`、`3`，很可能就是导入时的文件名回退结果；它们不会自动等于粒子 JSON 的 `description.identifier`。
+
+### 修复优先级
+
+第一层由 YesSteveVFX 插件完成，不要求修改 Blockbench：
+
+1. 为每个粒子保留源文件绝对路径和稳定内部 preview identifier；
+2. 新增/修改粒子帧时根据 `data_point.file` 反查源粒子文件；
+3. 保存源 animation.json 前，把 preview identifier 或文件名别名规范化为用户确认的事件别名；
+4. 绑定键使用“动画文件 + 动画名 + 时间 + 事件序号”，不再只用全局别名；
+5. 导出时保证 animation 的事件别名和 client entity 的 `particle_effects` 映射逐项一致；
+6. 对旧版仅按别名保存的 `vfx-project.json` 自动迁移，遇到多义绑定时要求用户确认。
+
+第二层在 YesSteveVFX 插件中提供独立的“粒子别名/绑定”面板。用户看到的是事件别名和源粒子文件，Blockbench 的内部显示名称只作为预览信息，不能成为导出依据。
+
+第三层由稳定 Blockbench fork 修复底层行为，适合社区 fork 合并：
+
+1. `changeKeyframeFile` 和 `changeParticleFile` 不再用文件名作为隐式别名；
+2. 优先读取粒子 JSON 的 `particle_effect.description.identifier`，并通过 client entity 映射得到短别名；
+3. 当没有 client entity 映射时，弹出明确的“事件别名”输入/选择，而不是自动生成数字或清洗后的文件名；
+4. `Animator.loadParticleEmitter` 为同一绝对路径复用 emitter，但允许显示名与 runtime identifier 分离；
+5. `bedrock_animation.js` 保存时保留用户指定的 `effect` 字符串，不把预览名称写回源文件；
+6. 增加测试：两个粒子文件同名、identifier 重复、中文文件名、数字文件名、同一动画多个事件，以及无 client entity 上下文的导入。
+
+这意味着不必等待 Blockbench fork 才能保证 YesSteveVFX 导出的包正确；插件层可以先实现可靠导出。fork 的价值主要是修复原生 Blockbench 粒子时间轴的显示和编辑体验，让其它项目也不再受到同一问题影响。
+
+### 本阶段验收
+
+- 一个包含两个 geo 文件和一个多 geometry 文件的测试包可以逐个选择并打开；
+- 每个模型标签页保存后只修改对应 geometry，保留同文件其它 geometry；
+- 模型选择窗口能列出关联动画文件和动画数量；
+- 新增粒子帧后保存，animation.json 的 `effect` 与 client entity 映射一致；
+- 粒子文件名为中文、数字或重复名称时，导出仍能播放正确粒子；
+- 不提供 client entity 绑定时，插件给出警告而不是静默猜测。
