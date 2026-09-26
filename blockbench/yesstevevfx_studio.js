@@ -1180,7 +1180,13 @@
         guard(() => {
           const root = createEmptyPack(parent, values);
           if (values.open !== false) {
-            if (studio) saveSettings(studio);
+            if (studio) {
+              // A previously opened source folder may have been moved or deleted
+              // outside Blockbench. Do not let its stale path prevent creating a
+              // new pack.
+              if (fs.existsSync(studio.root)) saveSettings(studio);
+              else studio = null;
+            }
             studio = scan(root);
             const starter = studio.effects.find(effect => effect.enabled) || studio.effects[0];
             if (starter) preview(starter, {allowIncomplete: true});
