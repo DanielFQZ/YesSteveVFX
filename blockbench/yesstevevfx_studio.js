@@ -344,9 +344,9 @@
       }
     }
   }
-  function preview(effect) {
+  function preview(effect, options = {}) {
     const errors = validate(studio, effect);
-    if (errors.length) throw new Error(errors.join('\n'));
+    if (errors.length && !options.allowIncomplete) throw new Error(errors.join('\n'));
     const existing = [...sessions.entries()].find(([, s]) => s.studio === studio && s.effect === effect && s.project);
     if (existing) {
       existing[1].project.select();
@@ -378,7 +378,11 @@
     }
     const particleCount = loadParticleLibrary();
     dialog?.hide(); Modes.options.animate.select(); Timeline.setTime(0); Animator.preview();
-    Blockbench.showQuickMessage(`已打开模型/动画预览，已注册 ${particleCount} 个粒子。空格播放；可直接在粒子时间轴添加它们。`, 6000);
+    if (errors.length) {
+      Blockbench.showQuickMessage(`已打开预览并注册 ${particleCount} 个粒子；仍有 ${errors.length} 个引用待绑定，可在资产窗口中检查。`, 6000);
+    } else {
+      Blockbench.showQuickMessage(`已打开模型/动画预览，已注册 ${particleCount} 个粒子。空格播放；可直接在粒子时间轴添加它们。`, 6000);
+    }
   }
   function capture() {
     const session = sessions.get(Project?.uuid);
@@ -518,7 +522,14 @@
     if (studio) saveSettings(studio);
     studio = scan(root);
     showStudio();
-    Blockbench.showQuickMessage(`导入完成：${studio.assets.length} 个文件、${studio.animations.length} 个动画、${studio.particles.length} 个粒子`, 5000);
+    const firstEffect = studio.effects.find(effect => effect.enabled) || studio.effects[0];
+    if (firstEffect) {
+      // Match YSM's import flow: open the model project immediately, then
+      // load the selected animation and the complete particle library.
+      guard(() => preview(firstEffect, {allowIncomplete: true}));
+    } else {
+      Blockbench.showQuickMessage(`导入完成：${studio.assets.length} 个文件，但没有可预览的 effect`, 5000);
+    }
   }
   // Blockbench creates a temporary Plugin instance under the selected file's
   // base name before evaluating a local plugin.  Registering the canonical ID
