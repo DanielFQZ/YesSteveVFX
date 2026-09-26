@@ -344,6 +344,23 @@
       }
     }
   }
+  function showAnimationPanel() {
+    Modes.options.animate.select();
+    const panel = Interface.Panels.animations;
+    // In Blockbench 5.x the animation tab may share another panel's
+    // container. Unfolding the animation panel alone leaves that host hidden.
+    const host = panel.getContainerPanel?.() || panel;
+    host.selectTab?.(panel);
+    host.fold(false);
+    const view = panel.vue;
+    if (view) {
+      view.search_term = '';
+      for (const animation of Animation.all) {
+        const group = (view.group_animations_by_file ? animation.path : animation.group_name) || '';
+        view.$set(view.files_folded, group, false);
+      }
+    }
+  }
   function preview(effect, options = {}) {
     const errors = validate(studio, effect);
     if (errors.length && !options.allowIncomplete) throw new Error(errors.join('\n'));
@@ -355,7 +372,7 @@
         const animationEffect = existing[1].animationEffects.get(animation.uuid) || effect;
         bindPreview(animation, animationEffect);
       }
-      dialog?.hide(); Modes.options.animate.select(); Animator.preview(); return;
+      dialog?.hide(); showAnimationPanel(); Animator.preview(); return;
     }
     const model = effect.model ? find(studio.models, effect.model, '模型') : null;
     // A new tab avoids replacing another open modeling project.
@@ -389,11 +406,11 @@
         session.animationEffects.set(animation.uuid, animationEffect);
         bindPreview(animation, animationEffect);
       }
-      loaded[0]?.select();
+      (loaded.find(animation => session.animationObjects.get(animation.uuid) === source.key) || loaded[0])?.select();
       session.animationFile = source.path;
     }
     const particleCount = loadParticleLibrary();
-    dialog?.hide(); Modes.options.animate.select(); Timeline.setTime(0); Animator.preview();
+    dialog?.hide(); showAnimationPanel(); Timeline.setTime(0); Animator.preview();
     if (errors.length) {
       Blockbench.showQuickMessage(`已打开预览并注册 ${particleCount} 个粒子；仍有 ${errors.length} 个引用待绑定，可在资产窗口中检查。`, 6000);
     } else {
