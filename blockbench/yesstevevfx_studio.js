@@ -405,7 +405,7 @@
       model.geometry = clone(geometry);
       model.id = geometry.description?.identifier || '';
       // Use the same file-opening entry point as YSM. The native codec sets
-      // export_path/export_codec, so Ctrl+S writes back to the original JSON.
+      // export_path/export_codec, so Save Model writes back to the original JSON.
       // Select this effect's geometry upfront; native Bedrock overwrite merges
       // it by identifier and preserves the other geometries in the source file.
       loadModelFile({name: path.basename(absolute), path: absolute,
@@ -550,7 +550,7 @@
     }
   }
   function refreshSavedAnimations() {
-    // Native Ctrl+S also writes the linked geometry file. Export must read
+    // Native Save Model writes the linked geometry file. Export must read
     // the updated model instead of silently using the original scan snapshot.
     const modelDocuments = new Map();
     for (const model of studio.models) {
