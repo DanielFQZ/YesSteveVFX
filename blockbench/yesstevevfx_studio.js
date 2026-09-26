@@ -502,7 +502,8 @@
     picker?.delete();
     picker = new Dialog({id: 'vfx_models', title: 'VFX · 选择模型', width: 1000, singleButton: true,
       component: {
-        data: {views: modelViews(studio), search: '', root: studio.root},
+        data: {views: modelViews(studio), search: '', root: studio.root,
+          counts: {models: studio.models.length, animations: studio.animations.length, particles: studio.particles.length}},
         computed: {filtered() { return this.views.filter(v => JSON.stringify([v.model?.path, v.model?.id, v.effects.map(e => e.name)]).toLowerCase().includes(this.search.toLowerCase())); }},
         methods: {
           open(view) { guard(() => {
@@ -513,7 +514,33 @@
           bind(view) { guard(() => showModelBindings(view)); },
           assets() { picker.hide(); guard(showStudio); }
         },
-        template: '<div class="vfx-studio"><p class="vfx-path">{{root}}</p><input placeholder="搜索模型、geometry 或特效" v-model="search"><button @click="assets">资产与绑定</button><p v-if="!views.length">尚无模型。将 geo.json、animation.json、粒子 JSON 和 PNG 放入工程目录，再使用 VFX → 重新扫描资产。</p><div class="vfx-particle" v-for="v in filtered" :key="v.key"><strong>{{v.model ? v.model.path : "仅粒子"}}</strong><p v-if="v.model">{{v.model.id}} · geometry #{{v.model.index}} · {{v.bones}} 骨骼 · {{v.cubes}} 方块</p><p>特效：{{v.effects.map(e => e.name).join("、") || "尚未关联"}} · {{v.particles || 0}} 个已绑定粒子</p><p v-for="f in v.files">{{f.path}}（文件共 {{f.count}} 个动画）</p><details v-if="v.animations.length"><summary>查看动画名称</summary><p v-for="a in v.animations">{{a.id}}</p></details><p v-if="!v.effects.length">请选择动画和贴图，插件不会猜测多模型关系。</p><button @click="open(v)">打开 / 切换标签</button><button v-if="v.model" @click="bind(v)">关联动画与贴图</button></div></div>'
+        template: `<div class="vfx-studio vfx-models">
+          <div class="vfx-models-header">
+            <p class="vfx-models-status">已载入 {{counts.models}} 个模型 · {{counts.animations}} 个动画 · {{counts.particles}} 个粒子</p>
+            <p class="vfx-path" :title="root">{{root}}</p>
+          </div>
+          <div class="vfx-models-toolbar">
+            <input type="text" class="vfx-models-search" aria-label="搜索模型、geometry 或特效" placeholder="搜索模型、geometry 或特效" v-model="search">
+            <button type="button" @click="assets">资产与绑定</button>
+          </div>
+          <div class="vfx-models-list">
+            <p class="vfx-models-empty" v-if="!views.length">尚无模型。将 geo.json、animation.json、粒子 JSON 和 PNG 放入工程目录，再使用 VFX → 重新扫描资产。</p>
+            <p class="vfx-models-empty" v-else-if="!filtered.length">没有找到匹配的模型，请更换搜索词。</p>
+            <article class="vfx-model-card" v-for="v in filtered" :key="v.key">
+              <strong class="vfx-model-title">{{v.model ? v.model.path : '仅粒子'}}</strong>
+              <p class="vfx-model-meta" v-if="v.model">geometry #{{v.model.index}} · {{v.bones}} 骨骼 · {{v.cubes}} 方块</p>
+              <dl class="vfx-model-info">
+                <template v-if="v.model"><dt>模型标识</dt><dd>{{v.model.id}}</dd></template>
+                <dt>特效</dt><dd>{{v.effects.map(e => e.name).join('、') || '尚未关联'}}</dd>
+                <dt>动画文件</dt><dd><div class="vfx-model-file" v-for="f in v.files" :key="f.path"><span>{{f.path}}</span><span class="vfx-model-count">{{f.count}} 个动画</span></div><span v-if="!v.files.length">尚未关联</span></dd>
+                <dt v-if="v.model">粒子</dt><dd v-if="v.model">{{v.particles || 0}} 个已绑定</dd>
+              </dl>
+              <details class="vfx-model-animations" v-if="v.animations.length"><summary>查看动画名称（{{v.animations.length}}）</summary><ul><li v-for="a in v.animations" :key="a.key">{{a.id}}</li></ul></details>
+              <p class="vfx-model-hint" v-if="!v.effects.length">先关联动画与贴图，再打开模型进行编辑。</p>
+              <div class="vfx-model-actions"><button type="button" @click="open(v)">打开 / 切换标签</button><button type="button" v-if="v.model" @click="bind(v)">关联动画与贴图</button></div>
+            </article>
+          </div>
+        </div>`
       }});
     picker.show();
   }
@@ -851,7 +878,6 @@
     if (studio) saveSettings(studio);
     studio = scan(root);
     showModelPicker();
-    Blockbench.showQuickMessage(`导入完成：${studio.models.length} 个模型、${studio.animations.length} 个动画、${studio.particles.length} 个粒子。请选择要编辑的模型。`, 6000);
   }
   function rescan() {
     if (!studio) throw new Error('请先导入工程文件夹');
@@ -880,7 +906,35 @@
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
     icon: 'auto_awesome', version: '0.2.0', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
-      style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}');
+      style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}' + `
+        .vfx-models{display:flex;flex-direction:column;gap:16px;min-width:0;line-height:1.5}
+        .vfx-models p{margin:0}
+        .vfx-models-header{display:grid;gap:6px;min-width:0}
+        .vfx-models-status{font-weight:600}
+        .vfx-models .vfx-path{font-size:.9em;overflow-wrap:anywhere;word-break:normal}
+        .vfx-models-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+        .vfx-models-toolbar input.vfx-models-search{display:block;flex:1 1 260px;width:100%;min-width:0;max-width:100%;height:36px;padding:6px 10px;box-sizing:border-box;border:1px solid var(--color-border);border-radius:4px;background:var(--color-back);color:var(--color-text)}
+        .vfx-models-toolbar input.vfx-models-search:focus{border-color:var(--color-accent)}
+        .vfx-models button{flex:0 0 auto;margin:0;min-height:34px;height:auto;padding:6px 12px;line-height:1.4;white-space:normal}
+        .vfx-models-list{display:grid;gap:14px;max-height:55vh;overflow-y:auto;min-width:0;padding:1px 6px 1px 1px}
+        .vfx-model-card{min-width:0;padding:16px;border:1px solid var(--color-border);border-radius:6px;background:var(--color-back)}
+        .vfx-model-title{display:block;font-size:1.05em;overflow-wrap:anywhere}
+        .vfx-models .vfx-model-meta{margin-top:4px;color:var(--color-subtle_text);font-size:.9em}
+        .vfx-model-info{display:grid;grid-template-columns:76px minmax(0,1fr);gap:8px 12px;margin:14px 0}
+        .vfx-model-info dt{color:var(--color-subtle_text)}
+        .vfx-model-info dd{margin:0;min-width:0;overflow-wrap:anywhere}
+        .vfx-model-file{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
+        .vfx-model-file + .vfx-model-file{margin-top:6px}
+        .vfx-model-file>span:first-child{min-width:0;overflow-wrap:anywhere}
+        .vfx-model-count{color:var(--color-subtle_text);white-space:nowrap}
+        .vfx-model-animations{margin:12px 0}
+        .vfx-model-animations summary{display:list-item;list-style:disclosure-closed inside;cursor:pointer;padding:4px 0}
+        .vfx-model-animations[open]>summary{list-style-type:disclosure-open}
+        .vfx-model-animations ul{margin:6px 0 0;padding-left:20px;max-height:160px;overflow-y:auto}
+        .vfx-model-animations li{overflow-wrap:anywhere;padding:2px 0}
+        .vfx-model-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+        .vfx-models .vfx-model-hint,.vfx-models-empty{color:var(--color-subtle_text);padding:8px 0}
+      `);
       const codec = AnimationCodec.codecs.bedrock;
       originalSaveAnimation = codec.saveAnimation;
       saveAnimationHook = function(animation) {
