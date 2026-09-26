@@ -28,6 +28,37 @@ function safeId(value, fallback) {
   return normalized || fallback;
 }
 
+// Minecraft resource paths are ASCII-only.  Using a fixed code-point escape
+// keeps imported names readable and, unlike replacing every non-ASCII name
+// with a generic fallback, prevents two files from overwriting each other.
+function resourceSegment(value, fallback = 'resource') {
+  const input = String(value ?? '').trim();
+  let result = '';
+  for (const character of input) {
+    const code = character.codePointAt(0);
+    if (code >= 0x61 && code <= 0x7a || code >= 0x30 && code <= 0x39 || '.-_'.includes(character)) {
+      result += character;
+    } else {
+      result += `_u${code.toString(16).padStart(4, '0')}`;
+    }
+  }
+  result = result.replace(/^[-_.]+|[-_.]+$/g, '');
+  return result || fallback;
+}
+
+function resourcePath(path, fallback = 'resource') {
+  const parts = normalizeSlash(String(path ?? '')).split('/').filter(Boolean);
+  return parts.map((part) => resourceSegment(part, fallback)).join('/');
+}
+
+function resourceLocation(value) {
+  if (typeof value !== 'string' || !value.trim()) return value;
+  const separator = value.indexOf(':');
+  if (separator < 0) return resourcePath(value);
+  const namespace = resourceSegment(value.slice(0, separator), 'minecraft');
+  return `${namespace}:${resourcePath(value.slice(separator + 1))}`;
+}
+
 function updatePreview() {
   const pack = safeId($('packId').value, 'my_effects');
   const selected = state.animations.filter((animation) => animation.enabled);
@@ -115,9 +146,9 @@ function normalizedImportedPath(path) {
   const manifestIndex = clean.lastIndexOf('manifest.json');
   if (manifestIndex >= 0 && (manifestIndex === 0 || clean[manifestIndex - 1] === '/')) return 'manifest.json';
   const assetIndex = clean.indexOf('assets/');
-  if (assetIndex >= 0) return clean.slice(assetIndex);
+  if (assetIndex >= 0) return resourcePath(clean.slice(assetIndex));
   const effectIndex = clean.indexOf('effects/');
-  if (effectIndex >= 0) return clean.slice(effectIndex);
+  if (effectIndex >= 0) return resourcePath(clean.slice(effectIndex));
 
   const name = clean.split('/').pop();
   const lower = clean.toLowerCase();
@@ -125,13 +156,14 @@ function normalizedImportedPath(path) {
   // named with `.particle.`.  They still belong to the texture registry;
   // putting them under assets/eyelib/particles makes them invisible to the
   // runtime publisher, which only publishes assets/eyelib/textures/*.png.
-  if (/\.(png|jpe?g)$/i.test(name)) return `assets/eyelib/textures/${name}`;
-  if (lower.endsWith('.geo.json')) return `assets/eyelib/models/${name}`;
-  if (lower.endsWith('.animation.json') || lower.endsWith('/animation.json') || lower.includes('/animations/')) return `assets/eyelib/animations/${name}`;
-  if (lower.includes('render_controller') || lower.includes('/render_controllers/')) return `assets/eyelib/render_controllers/${name}`;
-  if (lower.includes('particle') || lower.includes('/particles/')) return `assets/eyelib/particles/${name}`;
-  if (lower.includes('entity') || lower.includes('client_entity')) return `assets/eyelib/entity/${name}`;
-  return `assets/eyelib/misc/${name}`;
+  const safeName = resourceSegment(name, 'resource');
+  if (/\.(png|jpe?g)$/i.test(name)) return `assets/eyelib/textures/${safeName}`;
+  if (lower.endsWith('.geo.json')) return `assets/eyelib/models/${safeName}`;
+  if (lower.endsWith('.animation.json') || lower.endsWith('/animation.json') || lower.includes('/animations/')) return `assets/eyelib/animations/${safeName}`;
+  if (lower.includes('render_controller') || lower.includes('/render_controllers/')) return `assets/eyelib/render_controllers/${safeName}`;
+  if (lower.includes('particle') || lower.includes('/particles/')) return `assets/eyelib/particles/${safeName}`;
+  if (lower.includes('entity') || lower.includes('client_entity')) return `assets/eyelib/entity/${safeName}`;
+  return `assets/eyelib/misc/${safeName}`;
 }
 
 async function addFiles(files) {
@@ -239,8 +271,8 @@ function normalizeRenderControllerIdentifier(id, fallback = 'effect') {
 }
 
 function normalizeParticleIdentifier(id, shortName) {
-  if (typeof id === 'string' && id.startsWith('yesstevevfx:')) return id;
-  return `yesstevevfx:imported/${safeId(shortName, 'particle')}`;
+  if (typeof id === 'string' && id.startsWith('yesstevevfx:')) return resourceLocation(id);
+  return `yesstevevfx:imported/${resourceSegment(shortName, 'particle')}`;
 }
 
 async function normalizeImportedResources(files) {
@@ -297,7 +329,7 @@ async function normalizeImportedResources(files) {
         if (renderParameters && typeof renderParameters === 'object') {
           const current = typeof renderParameters.texture === 'string' ? renderParameters.texture : '';
           const selected = state.particleTextures.get(path);
-          const resolved = selected || autoParticleTexture(current, texturePaths) || current;
+          const resolved = selected || autoParticleTexture(current, texturePaths) || resourceLocation(current);
           if (resolved && current !== resolved) {
             renderParameters.texture = resolved;
             changed = true;
@@ -335,6 +367,16 @@ async function normalizeImportedResources(files) {
             if (value !== next) changed = true;
             return next;
           });
+        }
+        if (description.textures && typeof description.textures === 'object') {
+          for (const [key, value] of Object.entries(description.textures)) {
+            if (typeof value !== 'string') continue;
+            const next = resourceLocation(value);
+            if (value !== next) {
+              description.textures[key] = next;
+              changed = true;
+            }
+          }
         }
         if (description.particle_effects && typeof description.particle_effects === 'object') {
           for (const [key, value] of Object.entries(description.particle_effects)) {
@@ -386,7 +428,7 @@ async function scanAnimations() {
 
 function textureResourceId(path) {
   const relative = path.split('/textures/')[1];
-  return `yesstevevfx:textures/${withoutExtension(relative)}`;
+  return `yesstevevfx:textures/${resourcePath(withoutExtension(relative))}`;
 }
 
 function importedTexturePaths(files = state.files) {
@@ -397,10 +439,10 @@ function importedTexturePaths(files = state.files) {
 
 function autoParticleTexture(reference, texturePaths) {
   if (typeof reference !== 'string' || !reference.trim()) return null;
-  if (reference.startsWith('yesstevevfx:textures/')) return reference;
-  const stem = reference.split('/').pop().replace(/\.(png|jpe?g)$/i, '').toLowerCase();
+  if (reference.startsWith('yesstevevfx:textures/')) return resourceLocation(reference);
+  const stem = resourceSegment(reference.split('/').pop().replace(/\.(png|jpe?g)$/i, ''), 'texture');
   const exact = texturePaths.find((path) => {
-    const name = path.split('/').pop().replace(/\.(png|jpe?g)$/i, '').toLowerCase();
+    const name = path.split('/').pop().replace(/\.(png|jpe?g)$/i, '');
     return name === stem;
   });
   if (exact) return textureResourceId(exact);
@@ -576,7 +618,7 @@ async function generatedEntity(files, effectName, animationId) {
   const renderJson = renderPath ? await parseJson(files.get(renderPath), renderPath) : null;
   const geometry = geometryIdentifier(modelJson, `geometry.yesstevevfx.${effectName}`);
   const renderController = renderControllerIdentifier(renderJson, `controller.render.yesstevevfx.${effectName}`);
-  const texture = texturePath ? `yesstevevfx:textures/${withoutExtension(texturePath.split('/textures/')[1])}` : `yesstevevfx:textures/${effectName}`;
+  const texture = texturePath ? textureResourceId(texturePath) : `yesstevevfx:textures/${resourceSegment(effectName, 'effect')}`;
   const { particles: particleResources, aliases } = await particleAliases(files, particlePaths);
   const particles = Object.fromEntries(particleResources.map((particle) => [particle.short, particle.id]));
   for (const [alias, id] of aliases) particles[alias] = id;

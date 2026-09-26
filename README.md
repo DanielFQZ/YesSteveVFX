@@ -76,6 +76,12 @@ python -m http.server 8080 -d editor
 
 更详细的操作步骤和当前编辑器支持范围见 [editor/README.md](editor/README.md)。复杂的多实体关系、材质变量和动画 controller 仍可直接编辑生成目录中的 JSON。
 
+## Blockbench 一站式编辑器
+
+仓库中的 [`blockbench/yesstevevfx_studio.js`](blockbench/yesstevevfx_studio.js) 是桌面版 Blockbench 插件。它可以导入整个 VFX 文件夹，列出模型、动画、粒子、贴图和实体关系；动画时间轴里的每个粒子事件都要显式绑定到粒子 JSON，避免 Blockbench 的数字别名或同名 identifier 导致资源错配。插件可以调用 Blockbench 自带预览来同时播放模型动画和粒子，并把编辑后的模型/动画写回源工程（写回前自动备份）。
+
+安装和使用说明见 [blockbench/README.md](blockbench/README.md)。插件导出到客户端时会识别 `versions/` 下的隔离实例，将旧包移到 `vfx-backups`，不会把备份目录放入 `packs`。
+
 ## 控制接口
 
 YSM bridge 在包含 YSM 的客户端构件中注册以下 Molang 函数。函数返回 `1` 表示请求已接受，返回 `0` 表示参数、实体或 effect 不可用：
@@ -137,3 +143,4 @@ YSM 和 eyelib 是可选 source set。拿到对应的 1.20.1 JAR 后，使用：
 - stop 会停止特效实例和它跟踪的粒子发射器；已经生成的粒子会按自己的寿命结束。
 - 换世界、退出服务器和 effect duration 到期时都会移除 carrier。
 - `VfxApi` 可供其他 MOD 直接调用 `play(UUID, effectId, slot)`、`stop(UUID, slot)` 和 `set(UUID, slot, name, value)`，在专用服务器上会安全返回 `false`。
+
