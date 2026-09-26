@@ -944,8 +944,17 @@
         return guard(() => capture({animations: [animation], model: false, texture: false}));
       };
       codec.saveAnimation = saveAnimationHook;
-      for (const [id, name, fn] of [['import', '导入工程文件夹', importProject], ['new_pack', '新建特效包', createPack], ['models', '切换模型 / 打开其他模型', showModelPicker], ['rescan', '重新扫描资产', rescan], ['manage', '资产与绑定', showStudio], ['help', '使用说明', showHelp], ['capture', '保存当前编辑回工程', capture], ['export', '导出到客户端', exportClient]]) {
-        const action = new Action(`yesstevevfx_${id}`, {name, icon: 'auto_awesome', click: () => guard(() => { activeStudio(); return fn(); })});
+      for (const [id, name, icon, fn] of [
+        ['import', '导入工程文件夹', 'folder_open', importProject],
+        ['new_pack', '新建特效包', 'create_new_folder', createPack],
+        ['models', '切换模型 / 打开其他模型', 'view_in_ar', showModelPicker],
+        ['rescan', '重新扫描资产', 'refresh', rescan],
+        ['manage', '资产与绑定', 'account_tree', showStudio],
+        ['help', '使用说明', 'help_outline', showHelp],
+        ['capture', '保存当前编辑回工程', 'save', capture],
+        ['export', '导出到客户端', 'file_upload', exportClient]
+      ]) {
+        const action = new Action(`yesstevevfx_${id}`, {name, icon, click: () => guard(() => { activeStudio(); return fn(); })});
         actions.push(action);
       }
       menu = new BarMenu('yesstevevfx', actions, {name: 'VFX'});
