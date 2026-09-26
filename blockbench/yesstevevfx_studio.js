@@ -351,7 +351,10 @@
     if (existing) {
       existing[1].project.select();
       if (existing[1].model !== effect.model || existing[1].texture !== effect.texture) throw new Error('模型/贴图绑定已改变。请先保存并关闭旧预览标签，再重新打开。');
-      for (const animation of Animation.all) bindPreview(animation, effect);
+      for (const animation of Animation.all) {
+        const animationEffect = existing[1].animationEffects.get(animation.uuid) || effect;
+        bindPreview(animation, animationEffect);
+      }
       dialog?.hide(); Modes.options.animate.select(); Animator.preview(); return;
     }
     const model = effect.model ? find(studio.models, effect.model, '模型') : null;
@@ -365,23 +368,36 @@
     const textureAsset = effect.model ? find(studio.textures, effect.texture, '模型贴图') : null;
     const texture = textureAsset ? new Texture({keep_size: true}).fromPath(fileAt(studio.root, textureAsset.path)).add() : null;
     if (texture) { texture.select(); Cube.all.forEach(cube => cube.applyTexture(texture, true)); }
-    const session = {studio, effect, project, model: effect.model, texture: effect.texture, textureObject: texture, animationObjects: new Map()};
+    const session = {studio, effect, project, model: effect.model, texture: effect.texture, textureObject: texture,
+      animationObjects: new Map(), animationEffects: new Map()};
     sessions.set(project.uuid, session);
     if (effect.animation) {
       const source = find(studio.animations, effect.animation, '动画');
-      const file = {name: path.basename(source.path), path: '', json: {format_version: '1.8.0', animations: {[source.id]: clone(source.animation)}}};
+      // Import the complete animation file.  The selected effect is only the
+      // initial animation; all siblings remain visible in Blockbench's
+      // animation panel so the author can switch between test1..test5.
+      const fileAnimations = studio.animations.filter(animation => animation.path === source.path);
+      const animations = Object.fromEntries(fileAnimations.map(animation => [animation.id, clone(animation.animation)]));
+      const file = {name: path.basename(source.path), path: '', json: {format_version: '1.8.0', animations}};
       file.content = JSON.stringify(file.json);
       const loaded = typeof AnimationCodec !== 'undefined'
         ? AnimationCodec.codecs.bedrock.loadFile(file) : Animator.loadFile(file);
-      for (const animation of loaded) { session.animationObjects.set(animation.uuid, source.key); bindPreview(animation, effect); }
+      for (const animation of loaded) {
+        const sourceAnimation = fileAnimations.find(candidate => candidate.id === animation.name);
+        const animationEffect = studio.effects.find(candidate => candidate.animation === sourceAnimation?.key) || effect;
+        session.animationObjects.set(animation.uuid, sourceAnimation?.key || source.key);
+        session.animationEffects.set(animation.uuid, animationEffect);
+        bindPreview(animation, animationEffect);
+      }
       loaded[0]?.select();
+      session.animationFile = source.path;
     }
     const particleCount = loadParticleLibrary();
     dialog?.hide(); Modes.options.animate.select(); Timeline.setTime(0); Animator.preview();
     if (errors.length) {
       Blockbench.showQuickMessage(`已打开预览并注册 ${particleCount} 个粒子；仍有 ${errors.length} 个引用待绑定，可在资产窗口中检查。`, 6000);
     } else {
-      Blockbench.showQuickMessage(`已打开模型/动画预览，已注册 ${particleCount} 个粒子。空格播放；可直接在粒子时间轴添加它们。`, 6000);
+      Blockbench.showQuickMessage(`已打开模型预览，载入 ${Animation.all.length} 个动画并注册 ${particleCount} 个粒子。可在动画列表中切换预览。`, 6000);
     }
   }
   function capture() {
@@ -399,6 +415,7 @@
     }
     const pendingAnimations = [];
     for (const animation of Animation.all) {
+      const animationEffect = session.animationEffects.get(animation.uuid) || session.effect;
       let key = session.animationObjects.get(animation.uuid);
       let source = studio.animations.find(a => a.key === key);
       if (!source) {
@@ -409,9 +426,9 @@
       const compiled = typeof AnimationCodec !== 'undefined' ? AnimationCodec.codecs.bedrock.compileAnimation(animation) : animation.compileBedrockAnimation();
       // Only explicitly selected files can seed a new alias binding.
       for (const frame of animation.animators.effects?.particle || []) for (const point of frame.data_points) {
-        if (!session.effect.bindings[point.effect] && point.file) {
+        if (!animationEffect.bindings[point.effect] && point.file) {
           const particle = studio.particles.find(p => path.resolve(fileAt(studio.root, p.path)) === path.resolve(point.file));
-          if (particle) session.effect.bindings[point.effect] = particle.key;
+          if (particle) animationEffect.bindings[point.effect] = particle.key;
         }
       }
       let doc = writes.has(source.path) ? JSON.parse(writes.get(source.path).toString()) :
