@@ -274,7 +274,7 @@
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
-  let studio = null, dialog = null, style = null;
+  let studio = null, dialog = null, style = null, menu = null;
   const actions = [];
   const sessions = new Map();
   const errorBox = error => { console.error('[YesSteveVFX]', error); Blockbench.showMessageBox({title: 'YesSteveVFX', message: String(error.message || error)}); };
@@ -318,6 +318,7 @@
         '2. 在“特效绑定”中逐个选择 effect。动画文件里的全部动画会自动列出；取消左侧勾选即可不导出。',
         '3. 为每个 effect 选择模型、模型贴图和动画。数字粒子事件（例如 12、2、3）必须在事件绑定下拉框中手动指定对应粒子。',
         '4. 点击“检查引用”，确认没有未绑定的粒子、贴图或定位器。点击“打开 / 更新 Blockbench 预览”后，在动画模式按空格播放。',
+        '动画列表显示源 animation.json 文件名；动画行/文件分组的保存按钮直接写回该文件。原生保存不生成 VFX 备份，导出前请保存修改。',
         '5. 在 Blockbench 中编辑骨骼、定位器、贴图或动画；完成后点击 VFX → 保存当前编辑回工程。原文件会先备份到工程同级的 *-edit-backups。',
         '6. 点击“导出到客户端”，选择 .minecraft；检测到 versions 时再选择具体隔离版本。进入游戏后执行 /vfx_client reload，再用 /vfx_client play <pack_id>:<effect> test 播放。',
         '',
@@ -395,7 +396,7 @@
       // animation panel so the author can switch between test1..test5.
       const fileAnimations = studio.animations.filter(animation => animation.path === source.path);
       const animations = Object.fromEntries(fileAnimations.map(animation => [animation.id, clone(animation.animation)]));
-      const file = {name: path.basename(source.path), path: '', json: {format_version: '1.8.0', animations}};
+      const file = {name: path.basename(source.path), path: fileAt(studio.root, source.path), json: {format_version: '1.8.0', animations}};
       file.content = JSON.stringify(file.json);
       const loaded = typeof AnimationCodec !== 'undefined'
         ? AnimationCodec.codecs.bedrock.loadFile(file) : Animator.loadFile(file);
@@ -474,11 +475,37 @@
       source.id = animation.name;
       if (!studio.animations.includes(source)) studio.animations.push(source);
       session.animationObjects.set(animation.uuid, source.key);
+      animation.path = fileAt(studio.root, source.path);
+      animation.saved_name = animation.name;
+      animation.saved = true;
     }
     saveSettings(studio);
     Blockbench.showQuickMessage(`已保存 ${writes.size} 个编辑资产（备份位于工程同级目录）`, 5000);
   }
+  function refreshSavedAnimations() {
+    // Native animation saves write directly to the linked JSON. Read those
+    // changes before showing bindings or exporting, rather than cached data.
+    const documents = new Map();
+    const savedNames = new Map();
+    for (const session of sessions.values()) {
+      if (session.studio !== studio || !ModelProject.all.includes(session.project)) continue;
+      for (const animation of session.project.animations) {
+        const key = session.animationObjects.get(animation.uuid);
+        const source = studio.animations.find(candidate => candidate.key === key);
+        if (source && animation.saved && animation.path === fileAt(studio.root, source.path)) savedNames.set(key, animation.saved_name || animation.name);
+      }
+    }
+    for (const source of studio.animations) {
+      if (!documents.has(source.path)) documents.set(source.path, readJson(fileAt(studio.root, source.path)));
+      const id = savedNames.get(source.key) || source.id;
+      const animation = documents.get(source.path).animations?.[id];
+      if (!animation) throw new Error(`动画文件中已找不到 ${id}，请重新导入并检查特效绑定。`);
+      source.id = id;
+      source.animation = clone(animation);
+    }
+  }
   function exportTo(parent) {
+    refreshSavedAnimations();
     const result = exportPack(studio, parent);
     Blockbench.showMessageBox({title: 'VFX 导出完成', message: `${result.count} 个文件已写入：\n${result.target}\n\n在游戏执行 /vfx_client reload。${result.backup ? '\n旧包备份：' + result.backup : ''}`});
   }
@@ -499,6 +526,7 @@
   }
   function showStudio() {
     if (!studio) throw new Error('请先使用 VFX → 导入工程文件夹');
+    refreshSavedAnimations();
     dialog?.hide();
     dialog = new Dialog({id: 'yesstevevfx_studio', title: 'YesSteveVFX · 资产与绑定', width: 1060, singleButton: true,
       component: {
@@ -584,11 +612,13 @@
     icon: 'auto_awesome', version: '0.1.0', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}');
-      for (const [id, name, fn] of [['import', 'VFX：导入工程文件夹', importProject], ['manage', 'VFX：资产与绑定', showStudio], ['help', 'VFX：使用说明', showHelp], ['capture', 'VFX：保存当前编辑回工程', capture], ['export', 'VFX：导出到客户端', exportClient]]) {
+      for (const [id, name, fn] of [['import', '导入工程文件夹', importProject], ['manage', '资产与绑定', showStudio], ['help', '使用说明', showHelp], ['capture', '保存当前编辑回工程', capture], ['export', '导出到客户端', exportClient]]) {
         const action = new Action(`yesstevevfx_${id}`, {name, icon: 'auto_awesome', click: () => guard(fn)});
-        actions.push(action); MenuBar.addAction(action, 'tools');
+        actions.push(action);
       }
+      menu = new BarMenu('yesstevevfx', actions, {name: 'VFX'});
+      MenuBar.update();
     },
-    onunload() { dialog?.hide(); actions.forEach(action => action.delete()); style?.delete(); sessions.clear(); }
+    onunload() { dialog?.hide(); menu?.delete(); actions.forEach(action => action.delete()); MenuBar.update(); style?.delete(); sessions.clear(); }
   });
 })();
