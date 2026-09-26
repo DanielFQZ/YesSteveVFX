@@ -1169,10 +1169,10 @@
     if (!parent) return;
     new Dialog({id: 'vfx_new_pack', title: '新建 YesSteveVFX 特效包', width: 620,
       form: {
-        packId: {label: '包 ID（用于资源 ID，只允许英文/数字/._-）', type: 'text', value: 'new_pack'},
-        displayName: {label: '显示名称（可使用中文）', type: 'text', value: '新特效包'},
-        modelFile: {label: '初始模型文件名（可填写 .geo 或 .geo.json，支持中文）', type: 'text', value: 'model'},
-        animationFile: {label: '初始动画文件名（可填写 .animation 或 .animation.json，支持中文）', type: 'text', value: 'animation'},
+        packId: {label: '包 ID', description: '用于资源 ID，只允许英文、数字、点、横线和下划线。', type: 'text', value: 'new_pack'},
+        displayName: {label: '显示名称', description: '显示名称可以使用中文。', type: 'text', value: '新特效包'},
+        modelFile: {label: '初始模型文件名', description: '支持中文；可填写 .geo 或 .geo.json，插件会自动规范后缀。', type: 'text', value: 'model'},
+        animationFile: {label: '初始动画文件名', description: '支持中文；可填写 .animation 或 .animation.json，插件会自动规范后缀。', type: 'text', value: 'animation'},
         open: {label: '创建后立即打开工程', type: 'checkbox', value: true}
       },
       onConfirm(values) {
@@ -1287,6 +1287,8 @@
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);
       style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}' + `
+        dialog#vfx_new_pack{width:min(760px,calc(100vw - 32px)) !important}dialog#vfx_new_pack .dialog_content{margin:22px 28px 12px}dialog#vfx_new_pack .dialog_bar.form_bar{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr) 18px !important;align-items:center;column-gap:20px;min-height:38px;margin:10px 0}dialog#vfx_new_pack .dialog_bar.form_bar>label.name_space_left{width:auto;min-width:0;float:none;padding:0;line-height:1.35}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=text]{width:100%;box-sizing:border-box;min-width:0}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=checkbox]{justify-self:start;width:18px;height:18px;margin:0}dialog#vfx_new_pack .dialog_form_description{justify-self:end}
+        dialog#vfx_new_pack{width:min(760px,calc(100vw - 32px))}dialog#vfx_new_pack .dialog_content{margin:22px 28px 12px}dialog#vfx_new_pack .dialog_bar.form_bar{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr);align-items:center;column-gap:20px;min-height:38px;margin:10px 0}dialog#vfx_new_pack .dialog_bar.form_bar>label.name_space_left{width:auto;min-width:0;float:none;padding:0;line-height:1.35}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=text]{width:100%;box-sizing:border-box;min-width:0}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=checkbox]{justify-self:start;width:18px;height:18px;margin:0}dialog#vfx_new_pack .dialog_form_description{justify-self:end}
         .vfx-sync p{margin:12px 0;line-height:1.5}.vfx-sync label{display:flex;flex-direction:column;gap:6px;margin:12px 0}.vfx-sync select{width:100%;min-width:0}.vfx-sync-files{max-height:45vh;overflow:auto}.vfx-sync table{table-layout:fixed;border-collapse:collapse}.vfx-sync th,.vfx-sync td{text-align:left;padding:8px;border-bottom:1px solid var(--color-border);overflow-wrap:anywhere}.vfx-sync th:last-child{width:130px}
         .vfx-models{display:flex;flex-direction:column;gap:16px;min-width:0;line-height:1.5}
         .vfx-models p{margin:0}
