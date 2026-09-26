@@ -81,10 +81,15 @@ test('sync copies external particles with textures, preserves originals and reus
   const plan = core.planAssetSync(project, input);
   assert.deepEqual(plan.missing, []);
   assert.equal(plan.files.size, 3);
+  assert.equal(plan.particles[0].target, 'assets/eyelib/particles/12.json');
+  assert.equal(plan.particles[0].texture, 'assets/eyelib/textures/color.png');
+  assert.equal(plan.animations[0].target, `assets/eyelib/animations/${path.basename(external.animations[0].path)}`);
+  assert.ok(plan.rows.every(row => !row.target.includes('/imported/')));
   assert.equal(core.applyAssetSync(project, plan), 3);
   assert.deepEqual(fs.readFileSync(source), original);
   const copied = JSON.parse(fs.readFileSync(path.join(project.root, plan.particles[0].target)));
   assert.equal(copied.particle_effect.description.basic_render_parameters.texture + '.png', plan.particles[0].texture);
+  assert.match(copied.particle_effect.description.identifier, /^yesstevevfx:[^/]+\/particles\//);
   assert.equal(core.planAssetSync(project, input).files.size, 0);
   const loaded = core.scan(project.root);
   assert.equal(loaded.particles.find(p => p.key === plan.particles[0].target).texture, plan.particles[0].texture);
@@ -116,6 +121,7 @@ test('sync never overwrites colliding files or updates bindings on partial copy 
   fs.writeFileSync(path.join(project.root, target), protectedContent);
   const plan = core.planAssetSync(project, input);
   assert.notEqual(plan.particles[0].target, target);
+  assert.match(plan.particles[0].target, /^assets\/eyelib\/particles\/12_2\.json$/);
   const racingTarget = plan.particles[0].target;
   fs.writeFileSync(path.join(project.root, racingTarget), protectedContent);
   const before = JSON.stringify(core.settings(project));

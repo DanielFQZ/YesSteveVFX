@@ -448,20 +448,30 @@
       if (fs.statSync(file).size > 16 * 1024 * 1024) throw new Error('单个资产超过 16 MiB：' + file);
       return fs.readFileSync(file);
     };
-    function put(source, bytes, kind, extension, name) {
-      if (!bytes.length || bytes.length > 16 * 1024 * 1024) throw new Error('资产为空或超过 16 MiB：' + source);
+    function cleanAssetName(name, extension) {
+      const original = path.basename(name || 'asset');
+      const stem = path.basename(original, path.extname(original)).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || 'asset';
+      return `${stem.slice(0, 120)}${extension}`;
+    }
+    function put(source, bytes, kind, extension, name, canonicalize = (_target, raw) => raw, allowEmpty = false) {
+      if (bytes.length > 16 * 1024 * 1024 || (!bytes.length && !allowEmpty)) throw new Error('资产为空或超过 16 MiB：' + source);
       if (kind === 'textures' && !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error('贴图必须为 PNG：' + source);
-      const original = name || path.basename(source);
-      const stem = path.basename(original, path.extname(original)).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || 'asset';
-      const base = `${kind}/imported/${stem}_${hash(bytes)}`;
-      let target = `${base}${extension}`, index = 2;
-      while ((plan.files.has(target) && !plan.files.get(target).equals(bytes)) ||
-        (fs.existsSync(fileAt(project.root, target)) && !read(fileAt(project.root, target)).equals(bytes))) target = `${base}_${index++}${extension}`;
-      const reused = fs.existsSync(fileAt(project.root, target)) || plan.files.has(target);
-      plan.expected.set(target, bytes);
-      if (!reused) plan.files.set(target, bytes);
-      plan.rows.push({source, target, kind, status: reused ? '复用已有文件' : '复制到包内'});
-      return target;
+      const base = `assets/eyelib/${kind}/${cleanAssetName(name || source, extension)}`;
+      let target = base, index = 2;
+      while (true) {
+        const canonical = canonicalize(target, bytes);
+        const existing = fs.existsSync(fileAt(project.root, target)) ? read(fileAt(project.root, target)) : null;
+        const planned = plan.files.get(target);
+        if ((!existing || existing.equals(canonical)) && (!planned || planned.equals(canonical))) {
+          const reused = !!existing || !!planned;
+          plan.expected.set(target, canonical);
+          if (!reused) plan.files.set(target, canonical);
+          plan.rows.push({source, target, kind, status: reused ? '复用已有文件' : '复制到包内'});
+          return target;
+        }
+        const suffix = `_${index++}`;
+        target = `assets/eyelib/${kind}/${path.basename(base, extension)}${suffix}${extension}`;
+      }
     }
     const textures = new Map();
     function texture(file, bytes, name) {
@@ -488,10 +498,16 @@
         target = relative(project.root, item.source);
         plan.rows.push({source: item.source, target, kind: 'particles', status: '更新包内贴图绑定'});
       } else {
+        target = put(item.source, Buffer.alloc(0), 'particles', '.json', path.basename(item.source), candidate => {
+          const normalized = clone(json);
+          normalized.particle_effect.description.identifier = `yesstevevfx:${project.packId}/particles/${token(candidate)}`;
+          normalized.particle_effect.description.basic_render_parameters.texture = targetTexture.replace(/\.png$/i, '');
+          if (normalized.particle_effect.description.preview_texture) delete normalized.particle_effect.description.preview_texture;
+          return Buffer.from(JSON.stringify(normalized, null, 2) + '\n');
+        }, true);
+        json.particle_effect.description.identifier = `yesstevevfx:${project.packId}/particles/${token(target)}`;
         json.particle_effect.description.basic_render_parameters.texture = targetTexture.replace(/\.png$/i, '');
-        // Editor-only external paths must not travel into a portable copy.
         if (json.particle_effect.description.preview_texture) delete json.particle_effect.description.preview_texture;
-        target = put(item.source, Buffer.from(JSON.stringify(json, null, 2) + '\n'), 'particles', '.json');
       }
       plan.particles.push({source: item.source, target, texture: targetTexture, json});
     }
@@ -499,7 +515,7 @@
       if (inside(project.root, source)) continue;
       const bytes = read(source), json = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
       if (!json.animations || typeof json.animations !== 'object' || Array.isArray(json.animations)) throw new Error('不是有效的动画文件：' + source);
-      const target = put(source, bytes, 'animations', '.json');
+      const target = put(source, bytes, 'animations', '.json', path.basename(source));
       plan.animations.push({source, target, json});
     }
     const existing = filesIn(project.root);
@@ -637,7 +653,7 @@
         data: {rows: plan.rows, root: studio.root, model: !!context.session.model, modelTexture: context.defaultTexture,
           textures: Texture.all.map(t => ({id: t.uuid, name: t.name, path: t.path || '尚未保存的贴图'}))},
         template: `<div class="vfx-studio vfx-sync"><p class="vfx-path">目标特效包：{{root}}</p>
-          <p>复制当前标签引用的粒子、贴图和外部动画，保留外部原文件。相同内容可复用，同名不同内容会使用独立文件名。</p>
+          <p>复制当前标签引用的粒子、贴图和外部动画，保留外部原文件。外部资产默认写入 <code>assets/eyelib/particles</code>、<code>assets/eyelib/textures</code> 和 <code>assets/eyelib/animations</code>；相同内容可复用，同名不同内容会使用 <code>_2</code>、<code>_3</code> 等数字后缀。</p>
           <label v-if="model && textures.length">此模型使用的贴图 <select v-model="modelTexture"><option v-for="t in textures" :key="t.id" :value="t.id">{{t.name}} · {{t.path}}</option></select></label>
           <div class="vfx-sync-files"><table><thead><tr><th>源资产</th><th>包内位置</th><th>处理方式</th></tr></thead><tbody><tr v-for="(r, i) in rows" :key="i"><td>{{r.source}}</td><td>{{r.target}}</td><td>{{r.status}}</td></tr></tbody></table></div>
           <p>完成后请保存动画，让新的粒子引用写回源文件，再导出到客户端。复制出的 PNG 包含当前绘制结果。</p></div>`
