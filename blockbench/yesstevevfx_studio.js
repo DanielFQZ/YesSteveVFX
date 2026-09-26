@@ -9,6 +9,7 @@
   const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
   const hash = value => crypto.createHash('sha256').update(value).digest('hex').slice(0, 12);
   const token = value => `${path.basename(value).toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 28) || 'asset'}_${hash(value)}`;
+  const previewIdentifier = value => `yesstevevfx:preview/${token(value)}`;
   const uniqueMatch = items => items.length === 1 ? items[0] : null;
   const relative = (root, file) => slash(path.relative(root, file));
   function inside(root, child) {
@@ -126,7 +127,6 @@
       }
     } else {
       for (const animation of project.animations) addEffect(animation);
-      if (!project.effects.length) addEffect(null);
     }
     const particleTextures = new Set(project.particles.map(p => p.texture));
     const modelTexture = uniqueMatch(project.textures.filter(t => !particleTextures.has(t.key)));
@@ -243,6 +243,27 @@
     fs.writeFileSync(tmp, JSON.stringify(settings(project), null, 2) + '\n');
     fs.renameSync(tmp, dest);
   }
+  function createEmptyPack(parent, options = {}) {
+    parent = path.resolve(parent);
+    const packId = String(options.packId || '').trim().toLowerCase();
+    const displayName = String(options.displayName || packId).trim() || packId;
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(packId)) {
+      throw new Error('包 ID 必须是 1–64 位小写字母、数字、点、横线或下划线，并以字母/数字开头。中文可填写在显示名称中。');
+    }
+    const root = path.join(parent, packId);
+    if (fs.existsSync(root)) throw new Error(`目标目录已存在：${root}`);
+    fs.mkdirSync(root, {recursive: true});
+    for (const dir of ['effects', 'assets/eyelib/models', 'assets/eyelib/animations',
+      'assets/eyelib/particles', 'assets/eyelib/entity', 'assets/eyelib/render_controllers',
+      'assets/eyelib/textures']) fs.mkdirSync(path.join(root, dir), {recursive: true});
+    fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
+      format_version: 1, pack_id: packId, display_name: displayName, effects: []
+    }, null, 2) + '\n');
+    fs.writeFileSync(path.join(root, 'vfx-project.json'), JSON.stringify({
+      version: 1, packId, displayName, effects: [], particleTextures: {}
+    }, null, 2) + '\n');
+    return root;
+  }
   function exportPack(project, packsRoot) {
     const output = build(project);
     packsRoot = path.resolve(packsRoot);
@@ -270,7 +291,7 @@
     }
     return {target, backup: backedUp ? backup : '', count: output.size};
   }
-  const Core = {scan, settings, validate, build, exportPack, saveSettings, events, fileAt, token, emptyGeometry};
+  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, events, fileAt, token, emptyGeometry};
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
@@ -291,7 +312,7 @@
     // emitter a stable, unique identifier so duplicate source identifiers do
     // not overwrite each other in the particle picker.
     const document = clone(particle.json);
-    document.particle_effect.description.identifier = `yesstevevfx:preview/${token(particle.path)}`;
+    document.particle_effect.description.identifier = previewIdentifier(particle.path);
     const loaded = Animator.loadParticleEmitter(absolute, JSON.stringify(document));
     if (!loaded) throw new Error(`Blockbench 无法加载粒子：${particle.path}`);
     if (particle.texture) {
@@ -376,13 +397,27 @@
       dialog?.hide(); showAnimationPanel(); Animator.preview(); return;
     }
     const model = effect.model ? find(studio.models, effect.model, '模型') : null;
-    // A new tab avoids replacing another open modeling project.
-    setupProject(Formats.bedrock);
+    if (model) {
+      const absolute = fileAt(studio.root, model.path);
+      const document = readJson(absolute);
+      const geometry = document['minecraft:geometry']?.[model.index];
+      if (!geometry) throw new Error(`源文件中找不到模型：${model.path} #${model.index}`);
+      model.geometry = clone(geometry);
+      model.id = geometry.description?.identifier || '';
+      // Use the same file-opening entry point as YSM. The native codec sets
+      // export_path/export_codec, so Ctrl+S writes back to the original JSON.
+      // Select this effect's geometry upfront; native Bedrock overwrite merges
+      // it by identifier and preserves the other geometries in the source file.
+      loadModelFile({name: path.basename(absolute), path: absolute,
+        content: JSON.stringify({...document, 'minecraft:geometry': [geometry]})});
+    } else {
+      // Particle-only previews have no source model to save over.
+      setupProject(Formats.bedrock);
+      Codecs.bedrock.load({format_version: '1.12.0', 'minecraft:geometry': [emptyGeometry()]},
+        {path: '', no_file: true}, {import_to_current_project: true});
+      Project.name = `VFX · ${effect.name}`;
+    }
     const project = Project;
-    const geometry = model ? clone(model.geometry) : emptyGeometry();
-    Codecs.bedrock.load({format_version: '1.12.0', 'minecraft:geometry': [geometry]}, {path: '', no_file: true}, {import_to_current_project: true});
-    project.name = `VFX · ${effect.name}`;
-    project.export_path = ''; // Save source assets only through the explicit capture action.
     const textureAsset = effect.model ? find(studio.textures, effect.texture, '模型贴图') : null;
     const texture = textureAsset ? new Texture({keep_size: true}).fromPath(fileAt(studio.root, textureAsset.path)).add() : null;
     if (texture) { texture.select(); Cube.all.forEach(cube => cube.applyTexture(texture, true)); }
@@ -441,14 +476,23 @@
         key = `${rel}#${animation.name}`;
         source = {key, path: rel, id: animation.name};
       }
-      const compiled = typeof AnimationCodec !== 'undefined' ? AnimationCodec.codecs.bedrock.compileAnimation(animation) : animation.compileBedrockAnimation();
       // Only explicitly selected files can seed a new alias binding.
       for (const frame of animation.animators.effects?.particle || []) for (const point of frame.data_points) {
-        if (!animationEffect.bindings[point.effect] && point.file) {
+        if (point.file) {
           const particle = studio.particles.find(p => path.resolve(fileAt(studio.root, p.path)) === path.resolve(point.file));
-          if (particle) animationEffect.bindings[point.effect] = particle.key;
+          if (particle) {
+            const alias = particleAlias(animationEffect, particle);
+            if (alias) {
+              animationEffect.bindings[alias] = particle.key;
+              // Blockbench may put the preview emitter identifier into the
+              // Bedrock event. Store the stable source alias instead.
+              point.effect = alias;
+            }
+          }
         }
       }
+      const compiled = typeof AnimationCodec !== 'undefined' ? AnimationCodec.codecs.bedrock.compileAnimation(animation) : animation.compileBedrockAnimation();
+      normalizeParticleAliases(compiled, animationEffect);
       let doc = writes.has(source.path) ? JSON.parse(writes.get(source.path).toString()) :
         (fs.existsSync(fileAt(studio.root, source.path)) ? readJson(fileAt(studio.root, source.path)) : {format_version: '1.8.0', animations: {}});
       if (source.id !== animation.name) delete doc.animations[source.id];
@@ -482,7 +526,40 @@
     saveSettings(studio);
     Blockbench.showQuickMessage(`已保存 ${writes.size} 个编辑资产（备份位于工程同级目录）`, 5000);
   }
+  function particleAlias(effect, particle) {
+    const existing = Object.entries(effect?.bindings || {}).find(([, key]) => key === particle.key)?.[0];
+    if (existing && !existing.startsWith('yesstevevfx:preview/')) return existing;
+    const id = String(particle.id || '').trim();
+    if (id) return id;
+    return path.posix.basename(particle.path).replace(/(?:\.particle)?\.json$/i, '') || token(particle.path);
+  }
+  function normalizeParticleAliases(animation, effect) {
+    if (!animation?.particle_effects || !effect) return;
+    for (const values of Object.values(animation.particle_effects)) {
+      const list = Array.isArray(values) ? values : [values];
+      for (const event of list) {
+        if (!event || typeof event !== 'object') continue;
+        const preview = studio.particles.find(p => previewIdentifier(p.path) === event.effect);
+        if (!preview) continue;
+        const alias = particleAlias(effect, preview);
+        if (alias) {
+          event.effect = alias;
+          effect.bindings[alias] = preview.key;
+        }
+      }
+    }
+  }
   function refreshSavedAnimations() {
+    // Native Ctrl+S also writes the linked geometry file. Export must read
+    // the updated model instead of silently using the original scan snapshot.
+    const modelDocuments = new Map();
+    for (const model of studio.models) {
+      if (!modelDocuments.has(model.path)) modelDocuments.set(model.path, readJson(fileAt(studio.root, model.path)));
+      const geometry = modelDocuments.get(model.path)['minecraft:geometry']?.[model.index];
+      if (!geometry) throw new Error(`源文件中找不到模型：${model.path} #${model.index}`);
+      model.geometry = clone(geometry);
+      model.id = geometry.description?.identifier || '';
+    }
     // Native animation saves write directly to the linked JSON. Read those
     // changes before showing bindings or exporting, rather than cached data.
     const documents = new Map();
@@ -502,6 +579,9 @@
       if (!animation) throw new Error(`动画文件中已找不到 ${id}，请重新导入并检查特效绑定。`);
       source.id = id;
       source.animation = clone(animation);
+      for (const effect of studio.effects.filter(candidate => candidate.animation === source.key)) {
+        normalizeParticleAliases(source.animation, effect);
+      }
     }
   }
   function exportTo(parent) {
@@ -524,9 +604,37 @@
         }); }}).show();
     } else exportTo(path.join(root, 'config', 'yesstevevfx', 'packs'));
   }
+  function createPack() {
+    const parent = Blockbench.pickDirectory({title: '选择新特效包的父目录'});
+    if (!parent) return;
+    new Dialog({id: 'vfx_new_pack', title: '新建 YesSteveVFX 特效包', width: 620,
+      form: {
+        packId: {label: '包 ID（用于资源 ID，只允许英文/数字/._-）', type: 'text', value: 'new_pack'},
+        displayName: {label: '显示名称（可使用中文）', type: 'text', value: '新特效包'},
+        open: {label: '创建后立即打开工程', type: 'checkbox', value: true}
+      },
+      onConfirm(values) {
+        this.hide();
+        guard(() => {
+          const root = createEmptyPack(parent, values);
+          if (values.open !== false) {
+            if (studio) saveSettings(studio);
+            studio = scan(root);
+            showStudio();
+          }
+          Blockbench.showMessageBox({title: '特效包已创建', message: `已创建空特效包：\n${root}\n\n请在资产与绑定中添加特效、导入模型/动画/粒子后再导出。`});
+        });
+      }
+    }).show();
+  }
   function showStudio() {
     if (!studio) throw new Error('请先使用 VFX → 导入工程文件夹');
-    refreshSavedAnimations();
+    let refreshError = '';
+    try { refreshSavedAnimations(); }
+    catch (error) {
+      refreshError = error.message || String(error);
+      console.error('[YesSteveVFX] refresh animations failed', error);
+    }
     dialog?.hide();
     dialog = new Dialog({id: 'yesstevevfx_studio', title: 'YesSteveVFX · 资产与绑定', width: 1060, singleButton: true,
       component: {
@@ -534,7 +642,7 @@
         // Use a data object here instead of a factory function: this matches
         // Blockbench's own dialog components and prevents a blank dialog on
         // older Vue builds bundled with Blockbench 5.x.
-        data: {p: studio, selected: studio.effects[0]?.key || '', tab: 'effects', message: ''},
+        data: {p: studio, selected: studio.effects[0]?.key || '', tab: 'effects', message: refreshError},
         errorCaptured(error) {
           this.message = `界面渲染错误：${error.message || error}`;
           console.error('[YesSteveVFX] dialog render error', error);
@@ -559,7 +667,7 @@
           <div class="vfx-toolbar"><label>包 ID <input v-model="p.packId"></label><label>显示名 <input v-model="p.displayName"></label></div>
           <p>{{p.models.length}} 模型 · {{p.animations.length}} 动画 · {{p.particles.length}} 粒子 · {{p.textures.length}} 贴图</p>
           <div class="vfx-toolbar"><button @click="tab='effects'">特效绑定</button><button @click="tab='particles'">粒子与贴图</button><button @click="tab='assets'">全部资产</button></div>
-          <div v-if="tab==='effects'" class="vfx-columns"><div class="vfx-list"><button @click="add">＋ 新建特效</button><div v-for="e in p.effects" :key="e.key"><input type="checkbox" v-model="e.enabled"><button @click="selected=e.key" :class="{selected:selected===e.key}">{{e.name}}</button></div></div>
+          <div v-if="tab==='effects'" class="vfx-columns"><div class="vfx-list"><button @click="add">＋ 新建特效</button><div v-for="e in p.effects" :key="e.key"><input type="checkbox" v-model="e.enabled"><button @click="selected=e.key" :class="{selected:selected===e.key}">{{e.name}}</button></div><p v-if="!p.effects.length">当前工程还没有特效。点击“＋ 新建特效”，再选择模型、动画和粒子。</p></div>
             <div v-if="current" class="vfx-detail">
               <label>特效名<input v-model="current.name"></label><label>持续时间（tick；20 tick = 1 秒）<input type="number" min="1" max="72000" v-model.number="current.duration"></label>
               <label>模型<select v-model="current.model"><option value="">无模型（仅粒子）</option v-for="m in p.models" :value="m.key">{{m.path}} · {{m.id}}</option></select></label>
@@ -612,7 +720,7 @@
     icon: 'auto_awesome', version: '0.1.0', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}');
-      for (const [id, name, fn] of [['import', '导入工程文件夹', importProject], ['manage', '资产与绑定', showStudio], ['help', '使用说明', showHelp], ['capture', '保存当前编辑回工程', capture], ['export', '导出到客户端', exportClient]]) {
+      for (const [id, name, fn] of [['import', '导入工程文件夹', importProject], ['new_pack', '新建特效包', createPack], ['manage', '资产与绑定', showStudio], ['help', '使用说明', showHelp], ['capture', '保存当前编辑回工程', capture], ['export', '导出到客户端', exportClient]]) {
         const action = new Action(`yesstevevfx_${id}`, {name, icon: 'auto_awesome', click: () => guard(fn)});
         actions.push(action);
       }

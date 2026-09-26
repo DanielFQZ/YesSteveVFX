@@ -80,8 +80,8 @@ public final class LocalVfxAssetSource implements VfxAssetSource {
                 string(manifest, "display_name", pack);
             }
             JsonElement entries = manifest.get("effects");
-            if (entries == null || !entries.isJsonArray() || entries.getAsJsonArray().isEmpty()) {
-                throw invalid(pack, "effects must be a non-empty array of relative effect.json paths");
+            if (entries == null || !entries.isJsonArray()) {
+                throw invalid(pack, "effects must be an array of relative effect.json paths");
             }
             Set<String> effectPaths = new HashSet<>();
             for (JsonElement entry : entries.getAsJsonArray()) {

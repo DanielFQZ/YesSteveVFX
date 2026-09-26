@@ -69,6 +69,21 @@ class LocalVfxAssetSourceTest {
     }
 
     @Test
+    void acceptsEmptyPackAndUnicodeResourcePaths() throws Exception {
+        Path packs = temp.resolve("特效 packs");
+        Path empty = packs.resolve("empty_pack");
+        Files.createDirectories(empty);
+        Files.writeString(empty.resolve("manifest.json"),
+                "{\"format_version\":1,\"pack_id\":\"empty_pack\",\"display_name\":\"中文特效\",\"effects\":[]}",
+                StandardCharsets.UTF_8);
+        assertTrue(new LocalVfxAssetSource(packs).load().isEmpty());
+
+        writePack(packs, "unicode_pack", "yesstevevfx:slash", "assets/eyelib/entity/挥斩.json");
+        Files.move(packs.resolve("unicode_pack"), packs.resolve("中文目录"));
+        assertTrue(new LocalVfxAssetSource(packs).load().containsKey("yesstevevfx:slash"));
+    }
+
+    @Test
     void pathValidationRejectsEmptyAndParentSegments() {
         assertThrows(IllegalArgumentException.class, () -> LocalVfxAssetSource.validateRelativePath(""));
         assertThrows(IllegalArgumentException.class, () -> LocalVfxAssetSource.validateRelativePath("a/../b"));
