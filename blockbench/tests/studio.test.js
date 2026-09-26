@@ -147,3 +147,52 @@ test('sync uses edited texture bytes for particle dependencies and validates reu
   fs.writeFileSync(path.join(project.root, reused.textures[0].target), 'changed after preview');
   assert.throws(() => core.applyAssetSync(project, reused), /复用文件在预览后发生变化/);
 });
+test('publishing in place completes the runtime graph without changing editable sources or duplicating scans', t => {
+  const project = projectFixture(t), external = projectFixture(t);
+  const backupRoot = core.editBackupRoot(project.root);
+  t.after(() => {
+    assert.equal(path.dirname(backupRoot), os.tmpdir());
+    assert.ok(path.basename(backupRoot).startsWith('vfx-multimodel-') && backupRoot.endsWith('-edit-backups'));
+    fs.rmSync(backupRoot, {recursive: true, force: true});
+  });
+  const source = path.join(external.root, 'particles/12.json');
+  const particle = JSON.parse(fs.readFileSync(source)); particle.particle_effect.description.identifier = '';
+  fs.writeFileSync(source, JSON.stringify(particle));
+  const plan = core.planAssetSync(project, {particles: [{source}]}); core.applyAssetSync(project, plan);
+  const effect = project.effects[0]; project.effects = [effect];
+  effect.model = project.models[0].key; effect.texture = project.textures[0].key;
+  effect.eventBindings = Object.fromEntries(core.events(project.animations[0].animation).map(e => [e.key, {alias: e.effect, particle: plan.particles[0].target}]));
+  const modelBefore = fs.readFileSync(path.join(project.root, project.models[0].path));
+  const animationBefore = fs.readFileSync(path.join(project.root, project.animations[0].path));
+  const importedBefore = fs.readFileSync(path.join(project.root, plan.particles[0].target));
+  const result = core.publishRuntime(project); assert.equal(result.effects, 1);
+  const read = p => JSON.parse(fs.readFileSync(path.join(project.root, p)));
+  const manifest = read('manifest.json'); assert.equal(manifest.effects.length, 1);
+  const definition = read(manifest.effects[0]);
+  const entity = read(definition.client_entity)['minecraft:client_entity'].description;
+  const output = core.build(project, {generated: true});
+  const animationDoc = [...output].find(([p]) => p.startsWith('assets/eyelib/animations/'));
+  const animation = JSON.parse(animationDoc[1]).animations[entity.animations.main];
+  for (const e of core.events(animation)) {
+    const id = entity.particle_effects[e.effect]; assert.ok(id.startsWith('yesstevevfx:'));
+    const doc = [...output].filter(([p]) => p.startsWith('assets/eyelib/particles/')).map(([,b]) => JSON.parse(b)).find(p => p.particle_effect.description.identifier === id);
+    const tex = doc.particle_effect.description.basic_render_parameters.texture;
+    assert.ok(fs.existsSync(path.join(project.root, 'assets/eyelib/' + tex.split(':')[1] + '.png')));
+  }
+  assert.deepEqual(fs.readFileSync(path.join(project.root, project.models[0].path)), modelBefore);
+  assert.deepEqual(fs.readFileSync(path.join(project.root, project.animations[0].path)), animationBefore);
+  assert.deepEqual(fs.readFileSync(path.join(project.root, plan.particles[0].target)), importedBefore);
+  const rescanned = core.scan(project.root);
+  assert.equal(rescanned.models.length, project.models.length);
+  assert.equal(rescanned.animations.length, project.animations.length);
+  assert.equal(rescanned.particles.length, project.particles.length);
+  assert.ok(!rescanned.effects.some(e => e.animation.includes('vfx_generated')));
+  assert.equal(core.publishRuntime(project).count, 0);
+  effect.eventBindings['0#0'].particle = 'missing.json';
+  assert.throws(() => core.publishRuntime(project), /粒子/);
+  assert.deepEqual(read('manifest.json'), manifest, 'invalid saves do not publish a partial manifest');
+});
+test('runtime-pack edit backups live outside the packs directory', () => {
+  const root = path.join(os.tmpdir(), 'client', 'config', 'yesstevevfx', 'packs', 'test_effects');
+  assert.equal(core.editBackupRoot(root), path.join(os.tmpdir(), 'client', 'config', 'yesstevevfx', 'vfx-edit-backups', 'test_effects'));
+});

@@ -68,7 +68,7 @@
       assets: [], models: [], animations: [], particles: [], textures: [], effects: [], warnings: []};
     const documents = new Map();
     for (const rel of filesIn(root)) {
-      if (rel === 'vfx-project.json') continue;
+      if (rel === 'vfx-project.json' || (fs.existsSync(path.join(root, 'vfx-project.json')) && /^(assets\/eyelib\/[^/]+|effects)\/vfx_generated\//.test(rel))) continue;
       const asset = {path: rel, type: '其他'};
       project.assets.push(asset);
       if (/\.png$/i.test(rel)) { project.textures.push({key: rel, path: rel}); asset.type = '贴图'; continue; }
@@ -119,7 +119,7 @@
       }
       project.effects.push(effect);
     }
-    if (Array.isArray(manifest?.effects)) {
+    if (Array.isArray(manifest?.effects) && !fs.existsSync(path.join(root, 'vfx-project.json'))) {
       for (const rel of manifest.effects) {
         const definition = documents.get(rel);
         const entity = documents.get(definition?.client_entity)?.['minecraft:client_entity']?.description;
@@ -267,31 +267,32 @@
     return errors;
   }
   const emptyGeometry = () => ({description: {identifier: 'geometry.vfx_preview', texture_width: 1, texture_height: 1}, bones: [{name: 'root', pivot: [0, 0, 0]}]});
-  function build(project) {
+  function build(project, options = {}) {
     const errors = validate(project);
     if (errors.length) throw new Error(errors.join('\n'));
     const out = new Map();
     const json = (name, content) => out.set(name, Buffer.from(JSON.stringify(content, null, 2) + '\n'));
     const pack = project.packId;
-    const textureId = key => `yesstevevfx:textures/${pack}/${token(key)}`;
-    const particleId = key => `yesstevevfx:${pack}/${token(key)}`;
+    const resourcePack = options.generated ? `vfx_generated/${pack}` : pack;
+    const textureId = key => `yesstevevfx:textures/${resourcePack}/${token(key)}`;
+    const particleId = key => `yesstevevfx:${resourcePack}/${token(key)}`;
     function putTexture(key) {
       const texture = find(project.textures, key, '贴图');
-      out.set(`assets/eyelib/textures/${pack}/${token(key)}.png`, fs.readFileSync(fileAt(project.root, texture.path)));
+      out.set(`assets/eyelib/textures/${resourcePack}/${token(key)}.png`, fs.readFileSync(fileAt(project.root, texture.path)));
       return textureId(key);
     }
     const effectPaths = [];
     for (const effect of project.effects.filter(e => e.enabled)) {
-      const base = `${pack}.${effect.name}`;
+      const base = `${options.generated ? 'vfx_generated.' : ''}${pack}.${effect.name}`;
       const geometry = effect.model ? clone(find(project.models, effect.model, '模型').geometry) : emptyGeometry();
       geometry.description.identifier = `geometry.yesstevevfx.${base}`;
-      json(`assets/eyelib/models/${pack}/${effect.name}.geo.json`, {format_version: '1.12.0', 'minecraft:geometry': [geometry]});
-      const entity = {identifier: `yesstevevfx:${pack}/${effect.name}`, materials: {default: 'entity_alphatest'},
+      json(`assets/eyelib/models/${resourcePack}/${effect.name}.geo.json`, {format_version: '1.12.0', 'minecraft:geometry': [geometry]});
+      const entity = {identifier: `yesstevevfx:${resourcePack}/${effect.name}`, materials: {default: 'entity_alphatest'},
         geometry: {default: geometry.description.identifier}, textures: {}, particle_effects: {},
         render_controllers: [`controller.render.yesstevevfx.${base}`]};
       if (effect.model) entity.textures.default = putTexture(effect.texture);
       else {
-        const key = `textures/${pack}/empty`;
+        const key = `textures/${resourcePack}/empty`;
         entity.textures.default = `yesstevevfx:${key}`;
         out.set(`assets/eyelib/${key}.png`, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64'));
       }
@@ -305,18 +306,18 @@
           const doc = clone(particle.json);
           doc.particle_effect.description.identifier = particleId(particle.key);
           doc.particle_effect.description.basic_render_parameters.texture = putTexture(particle.texture);
-          json(`assets/eyelib/particles/${pack}/${token(particle.key)}.json`, doc);
+          json(`assets/eyelib/particles/${resourcePack}/${token(particle.key)}.json`, doc);
         }
         const id = `animation.yesstevevfx.${base}`;
         entity.animations = {main: id}; entity.scripts = {animate: ['main']};
-        json(`assets/eyelib/animations/${pack}/${effect.name}.animation.json`, {format_version: '1.8.0', animations: {[id]: animation}});
+        json(`assets/eyelib/animations/${resourcePack}/${effect.name}.animation.json`, {format_version: '1.8.0', animations: {[id]: animation}});
       }
-      const entityPath = `assets/eyelib/entity/${pack}/${effect.name}.json`;
+      const entityPath = `assets/eyelib/entity/${resourcePack}/${effect.name}.json`;
       json(entityPath, {'minecraft:client_entity': {description: entity}});
-      json(`assets/eyelib/render_controllers/${pack}/${effect.name}.json`, {render_controllers: {
+      json(`assets/eyelib/render_controllers/${resourcePack}/${effect.name}.json`, {render_controllers: {
         [entity.render_controllers[0]]: {geometry: 'Geometry.default', materials: ['Material.default'], textures: ['Texture.default']}
       }});
-      const effectPath = `effects/${effect.name}.json`;
+      const effectPath = `effects/${options.generated ? 'vfx_generated/' : ''}${effect.name}.json`;
       effectPaths.push(effectPath);
       json(effectPath, {format_version: 1, id: `${pack}:${effect.name}`, duration_ticks: Number(effect.duration), client_entity: entityPath});
     }
@@ -326,6 +327,49 @@
       if (!/^[a-z0-9._/-]+$/.test(name) || bytes.length > 16 * 1024 * 1024) throw new Error(`导出资源路径或大小不合法：${name}`);
     }
     return out;
+  }
+  function editBackupRoot(root) {
+    const parent = path.dirname(path.resolve(root));
+    return path.basename(parent).toLowerCase() === 'packs'
+      ? path.join(path.dirname(parent), 'vfx-edit-backups', path.basename(root))
+      : path.join(parent, `${path.basename(root)}-edit-backups`);
+  }
+  function publishRuntime(project) {
+    // Keep editable sources and their BB paths intact. The manifest points at
+    // generated resources with distinct IDs, so old source assets cannot shadow them.
+    const output = build(project, {generated: true});
+    const sources = new Set([...project.models, ...project.animations, ...project.particles, ...project.textures].map(a => a.path));
+    for (const file of output.keys()) if (sources.has(file)) throw new Error('生成目录被当作源资产使用，请先调整源路径：' + file);
+    output.set('vfx-project.json', Buffer.from(JSON.stringify(settings(project), null, 2) + '\n'));
+    const all = new Map(filesIn(project.root).map(file => [file, fs.statSync(fileAt(project.root, file)).size]));
+    for (const [file, bytes] of output) all.set(file, bytes.length);
+    if (all.size > 4096 || [...all.values()].reduce((a, b) => a + b, 0) > 128 * 1024 * 1024) throw new Error('生成后特效包会超过资源大小限制');
+    const changed = [...output].filter(([file, bytes]) => !fs.existsSync(fileAt(project.root, file)) || !fs.readFileSync(fileAt(project.root, file)).equals(bytes));
+    // Switch the manifest only after every dependency is in place.
+    changed.sort(([a], [b]) => Number(a === 'manifest.json') - Number(b === 'manifest.json'));
+    const backup = path.join(editBackupRoot(project.root), `runtime-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`);
+    const previous = new Map();
+    for (const [file] of changed) {
+      const dest = fileAt(project.root, file);
+      previous.set(file, fs.existsSync(dest) ? fs.readFileSync(dest) : null);
+      if (previous.get(file)) {
+        const old = fileAt(backup, file); fs.mkdirSync(path.dirname(old), {recursive: true}); fs.writeFileSync(old, previous.get(file));
+      }
+    }
+    const written = [];
+    try {
+      for (const [file, bytes] of changed) {
+        const dest = fileAt(project.root, file);
+        fs.mkdirSync(path.dirname(dest), {recursive: true}); written.push(file); fs.writeFileSync(dest, bytes);
+      }
+    } catch (error) {
+      for (const file of written.reverse()) {
+        const dest = fileAt(project.root, file), old = previous.get(file);
+        if (old) fs.writeFileSync(dest, old); else if (fs.existsSync(dest)) fs.unlinkSync(dest);
+      }
+      throw error;
+    }
+    return {count: changed.length, effects: project.effects.filter(e => e.enabled).length, backup: changed.length ? backup : ''};
   }
   function saveSettings(project) {
     const dest = path.join(project.root, 'vfx-project.json');
@@ -505,7 +549,7 @@
     Object.assign(project, next);
     return created.length;
   }
-  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync};
+  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot};
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
@@ -545,7 +589,7 @@
   function saveWorkspace() {
     if (!studio) throw new Error('请先导入文件夹');
     saveSettings(studio);
-    Blockbench.showQuickMessage('VFX 工程绑定已保存');
+    updateRuntimeAfterSave('VFX 工程绑定已保存');
   }
   function syncExternalAssets() {
     const session = sessions.get(Project?.uuid);
@@ -684,7 +728,7 @@
         '3. 在“资产与绑定”中按时间与事件序号指定粒子文件。同名事件也可绑定不同粒子；数字或中文文件名不影响导出。',
         '4. 点击“检查引用”，确认没有未绑定的粒子、贴图或定位器。点击“打开 / 更新 Blockbench 预览”后，在动画模式按空格播放。',
         '动画列表载入关联文件中的全部动画。动画行/文件分组的保存按钮写回源文件，并由 VFX 校正粒子绑定、生成备份；共享动画发生保存冲突时会阻止覆盖。',
-        '5. 在 Blockbench 中编辑骨骼、定位器、贴图或动画；完成后点击 VFX → 保存当前编辑回工程。原文件会先备份到工程同级的 *-edit-backups。',
+        '5. 在 Blockbench 中编辑骨骼、定位器、贴图或动画；完成后点击 VFX → 保存当前编辑回工程。原文件会先备份；客户端包的备份位于 packs 外的 vfx-edit-backups。保存后自动更新运行时包。',
         '6. 点击“导出到客户端”，选择 .minecraft；检测到 versions 时再选择具体隔离版本。进入游戏后执行 /vfx_client reload，再用 /vfx_client play <pack_id>:<effect> test 播放。',
         '',
         '**常用菜单**',
@@ -693,7 +737,8 @@
         'VFX → 切换模型 / 打开其他模型：选择同一包里的另一个 geo 或 geometry。',
         'VFX → 重新扫描资产：将新的模型、动画、粒子、贴图放入工程目录后，更新资产列表。',
         'VFX → 同步外部资产到特效包：复制当前标签引用的外部粒子、贴图和动画，更新引用后再保存。',
-        'VFX → 保存当前编辑回工程：写回当前预览标签的模型和动画。',
+        'VFX → 保存当前编辑回工程：写回当前标签并生成游戏用资源与映射，客户端可直接 reload。',
+        'VFX → 更新当前包的运行时资源：从已保存的源文件重新生成可播放包。',
         'VFX → 导出到客户端：写入 config/yesstevevfx/packs，并把旧包移到 vfx-backups。',
         '',
         '预览和游戏渲染是两条独立链路：预览缺失优先检查绑定或粒子 JSON；预览正常而游戏缺失再检查导出包和运行时日志。'
@@ -840,6 +885,27 @@
   function preview(effect, options = {}) {
     const errors = validate(studio, effect);
     if (errors.length && !options.allowIncomplete) throw new Error(errors.join('\n'));
+    // Reattach an already-open source tab after a plugin reload. Do not replace
+    // its live model or unsaved animation edits with a fresh disk import.
+    if (effect.model) {
+      const model = find(studio.models, effect.model, '模型');
+      const tab = ModelProject.all.find(p => !sessions.has(p.uuid) && p.export_path &&
+        path.resolve(p.export_path) === path.resolve(fileAt(studio.root, model.path)) &&
+        'geometry.' + p.geometry_name === model.id);
+      if (tab) {
+        const session = {studio, effect, project: tab, model: effect.model, texture: effect.texture,
+          textureObject: tab.textures.find(t => t.path && effect.texture && path.resolve(t.path) === path.resolve(fileAt(studio.root, effect.texture))),
+          animationObjects: new Map(), animationEffects: new Map(), snapshots: new Map()};
+        for (const animation of tab.animations) {
+          const source = studio.animations.find(a => animation.path && path.resolve(fileAt(studio.root, a.path)) === path.resolve(animation.path) && a.id === (animation.saved_name || animation.name));
+          if (source) {
+            session.animationObjects.set(animation.uuid, source.key);
+            session.snapshots.set(animation.uuid, JSON.stringify(source.animation));
+          }
+        }
+        sessions.set(tab.uuid, session);
+      }
+    }
     const existing = [...sessions.values()].find(s => s.studio === studio &&
       s.model === effect.model && ModelProject.all.includes(s.project));
     if (existing) {
@@ -935,7 +1001,7 @@
     if (options.texture !== false && session.textureObject && session.textureObject.saved === false) {
       writes.set(session.texture, Buffer.from(session.textureObject.getBase64(), 'base64'));
     }
-    const backup = path.join(path.dirname(studio.root), `${path.basename(studio.root)}-edit-backups`, `${Date.now()}-${crypto.randomBytes(3).toString('hex')}`);
+    const backup = path.join(editBackupRoot(studio.root), `${Date.now()}-${crypto.randomBytes(3).toString('hex')}`);
     for (const [rel, bytes] of writes) {
       const dest = fileAt(studio.root, rel);
       if (fs.existsSync(dest)) { const old = fileAt(backup, rel); fs.mkdirSync(path.dirname(old), {recursive: true}); fs.copyFileSync(dest, old); }
@@ -981,7 +1047,24 @@
       animation.saved = true;
     }
     saveSettings(studio);
-    Blockbench.showQuickMessage(`已保存 ${writes.size} 个编辑资产（备份位于工程同级目录）`, 5000);
+    updateRuntimeAfterSave(`已保存 ${writes.size} 个编辑资产`);
+  }
+  function updateRuntimeAfterSave(message) {
+    try {
+      refreshSavedAnimations();
+      const result = publishRuntime(studio);
+      Blockbench.showQuickMessage(`${message}，已更新 ${result.effects} 个运行时特效。客户端可执行 /vfx_client reload`, 6000);
+    } catch (error) {
+      Blockbench.showMessageBox({title: '源文件已保存，运行时包尚未更新', message: `${message}。\n\n${error.message}\n\n请修复绑定后使用 VFX → 更新当前包的运行时资源，再在客户端 reload。`});
+    }
+  }
+  function updateCurrentRuntime() {
+    if (!studio) throw new Error('请先导入工程文件夹');
+    for (const session of sessions.values()) if (session.studio === studio && ModelProject.all.includes(session.project) &&
+      session.project.animations.some(a => !a.saved)) throw new Error('有未保存的动画，请先保存，再更新运行时资源。');
+    refreshSavedAnimations();
+    const result = publishRuntime(studio);
+    Blockbench.showMessageBox({title: '当前包已更新', message: `已生成 ${result.effects} 个可播放特效，更新 ${result.count} 个文件。\n\n客户端执行 /vfx_client reload 即可。\n${result.backup ? '备份：' + result.backup : ''}`});
   }
   function refreshSavedAnimations() {
     // Native Save Model writes the linked geometry file. Export must read
@@ -1155,7 +1238,7 @@
   const pluginId = registered.yesstevevfx_studio ? 'yesstevevfx_studio' : (loadingLocal || 'yesstevevfx_studio');
   pluginApi.register(pluginId, {
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
-    icon: 'auto_awesome', version: '0.2.0', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
+    icon: 'auto_awesome', version: '0.2.1', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);
@@ -1204,6 +1287,7 @@
         ['models', '切换模型 / 打开其他模型', 'view_in_ar', showModelPicker],
         ['rescan', '重新扫描资产', 'refresh', rescan],
         ['sync_assets', '同步外部资产到特效包', 'drive_file_move', syncExternalAssets],
+        ['update_runtime', '更新当前包的运行时资源', 'build', updateCurrentRuntime],
         ['manage', '资产与绑定', 'account_tree', showStudio],
         ['help', '使用说明', 'help_outline', showHelp],
         ['capture', '保存当前编辑回工程', 'save', capture],
