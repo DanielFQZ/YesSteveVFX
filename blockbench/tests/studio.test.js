@@ -218,3 +218,11 @@ test('new pack creates editable geo and animation sources with a preview binding
   assert.equal(project.effects[0].model, 'models/女漂.geo.json#0');
   assert.equal(project.effects[0].animation, 'animations/攻击.animation.json#animation.demo_pack.main');
 });
+test('runtime publish can clear the manifest after deleting the last effect', t => {
+  const project = projectFixture(t);
+  project.effects = [];
+  const result = core.publishRuntime(project);
+  assert.equal(result.effects, 0);
+  const manifest = JSON.parse(fs.readFileSync(path.join(project.root, 'manifest.json')));
+  assert.deepEqual(manifest.effects, []);
+});

@@ -235,12 +235,12 @@
     if (!item) throw new Error(`请选择${label}（${key || '未绑定'}）`);
     return item;
   }
-  function validate(project, onlyEffect) {
+  function validate(project, onlyEffect, options = {}) {
     const errors = [];
     const names = new Set();
     if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(project.packId)) errors.push('包 ID 必须是 1–64 位小写字母、数字、点、横线或下划线，并以字母/数字开头');
     const effects = onlyEffect ? [onlyEffect] : project.effects.filter(e => e.enabled);
-    if (!effects.length) errors.push('至少启用一个特效');
+    if (!effects.length && !options.allowEmpty) errors.push('至少启用一个特效');
     for (const effect of effects) {
       try {
         if (!/^[a-z0-9][a-z0-9._-]{0,95}$/.test(effect.name)) throw new Error('特效名必须是合法 ASCII ID');
@@ -268,7 +268,7 @@
   }
   const emptyGeometry = () => ({description: {identifier: 'geometry.vfx_preview', texture_width: 1, texture_height: 1}, bones: [{name: 'root', pivot: [0, 0, 0]}]});
   function build(project, options = {}) {
-    const errors = validate(project);
+    const errors = validate(project, undefined, options);
     if (errors.length) throw new Error(errors.join('\n'));
     const out = new Map();
     const json = (name, content) => out.set(name, Buffer.from(JSON.stringify(content, null, 2) + '\n'));
@@ -337,7 +337,7 @@
   function publishRuntime(project) {
     // Keep editable sources and their BB paths intact. The manifest points at
     // generated resources with distinct IDs, so old source assets cannot shadow them.
-    const output = build(project, {generated: true});
+    const output = build(project, {generated: true, allowEmpty: true});
     const sources = new Set([...project.models, ...project.animations, ...project.particles, ...project.textures].map(a => a.path));
     for (const file of output.keys()) if (sources.has(file)) throw new Error('生成目录被当作源资产使用，请先调整源路径：' + file);
     output.set('vfx-project.json', Buffer.from(JSON.stringify(settings(project), null, 2) + '\n'));
@@ -1144,6 +1144,8 @@
     if (!studio) throw new Error('请先导入工程文件夹');
     for (const session of sessions.values()) if (session.studio === studio && ModelProject.all.includes(session.project)) {
       if (session.project.animations.some(a => !a.saved)) throw new Error(`标签“${session.project.name}”有未保存的动画，请先保存再导出。`);
+      if (session.project.saved === false) throw new Error(`标签“${session.project.name}”有未保存的模型修改，请先点击“保存当前编辑回工程”再导出。`);
+      if (session.textureObject?.saved === false) throw new Error(`标签“${session.project.name}”有未保存的贴图修改，请先点击“保存当前编辑回工程”再导出。`);
     }
     refreshSavedAnimations();
     const result = exportPack(studio, parent);
@@ -1232,6 +1234,15 @@
           bind(event, value) { this.$set(this.current.eventBindings, event.key, {alias: event.effect, particle: value}); },
           modelChanged() { this.current.modelUnresolved = false; },
           add() { const effect = makeEffect(this.p); this.p.effects.push(effect); this.selected = effect.key; },
+          remove() {
+            const index = this.p.effects.findIndex(effect => effect.key === this.selected);
+            if (index < 0) return;
+            const name = this.p.effects[index].name;
+            this.p.effects.splice(index, 1);
+            this.selected = this.p.effects[index]?.key || this.p.effects[index - 1]?.key || '';
+            saveSettings(studio);
+            updateRuntimeAfterSave(`已删除特效 ${name}`);
+          },
           openParticle(particle) { new Dialog({id: 'vfx_particle_json', title: particle.path, width: 800, form: {json: {type: 'textarea', label: 'Bedrock 粒子 JSON', value: JSON.stringify(particle.json, null, 2)}}, onConfirm(values) { guard(() => { const parsed = JSON.parse(values.json); if (!parsed.particle_effect?.description) throw new Error('缺少 particle_effect.description'); const source = fileAt(studio.root, particle.path); const backup = path.join(path.dirname(studio.root), `${path.basename(studio.root)}-edit-backups`, `${Date.now()}-${token(particle.path)}.json`); fs.mkdirSync(path.dirname(backup), {recursive: true}); fs.copyFileSync(source, backup); fs.writeFileSync(source, JSON.stringify(parsed, null, 2) + '\n'); particle.json = parsed; particle.id = parsed.particle_effect.description.identifier || ''; this.hide(); }); }}).show(); }
         },
         template: `<div class="vfx-studio">
@@ -1242,7 +1253,7 @@
           <div class="vfx-toolbar"><button @click="tab='effects'">特效绑定</button><button @click="tab='particles'">粒子与贴图</button><button @click="tab='assets'">全部资产</button></div>
           <div v-if="tab==='effects'" class="vfx-columns"><div class="vfx-list"><button @click="add">＋ 新建特效</button><div v-for="e in p.effects" :key="e.key"><input type="checkbox" v-model="e.enabled"><button @click="selected=e.key" :class="{selected:selected===e.key}">{{e.name}}</button></div><p v-if="!p.effects.length">当前工程还没有特效。点击“＋ 新建特效”，再选择模型、动画和粒子。</p></div>
             <div v-if="current" class="vfx-detail">
-              <label>特效名<input v-model="current.name"></label><label>持续时间（tick；20 tick = 1 秒）<input type="number" min="1" max="72000" v-model.number="current.duration"></label>
+              <div class="vfx-detail-heading"><label>特效名<input v-model="current.name"></label><button type="button" class="vfx-danger" @click="remove">删除当前特效</button></div><label>持续时间（tick；20 tick = 1 秒）<input type="number" min="1" max="72000" v-model.number="current.duration"></label>
               <label>模型<select v-model="current.model" @change="modelChanged"><option value="">无模型（仅粒子）</option><option v-for="m in p.models" :value="m.key">{{m.path}} · {{m.id}}</option></select></label>
               <p v-if="current.modelUnresolved">模型关系尚未确认。请选择模型，或点击<button @click="modelChanged">确认为仅粒子</button></p>
               <label v-if="current.model">模型贴图<select v-model="current.texture"><option value="">请选择</option><option v-for="t in p.textures" :value="t.key">{{t.path}}</option></select></label>
@@ -1296,7 +1307,7 @@
     onload() {
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);
-      style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}' + `
+      style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail-heading{display:flex;align-items:flex-end;gap:12px}.vfx-detail-heading>label{flex:1;min-width:0}.vfx-danger{background:var(--color-close);color:var(--color-light);white-space:nowrap}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}' + `
         dialog#vfx_new_pack{width:min(760px,calc(100vw - 32px)) !important}dialog#vfx_new_pack .dialog_content{margin:22px 28px 12px}dialog#vfx_new_pack .dialog_bar.form_bar{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr) 18px !important;align-items:center;column-gap:20px;min-height:38px;margin:10px 0}dialog#vfx_new_pack .dialog_bar.form_bar>label.name_space_left{width:auto;min-width:0;float:none;padding:0;line-height:1.35}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=text]{width:100%;box-sizing:border-box;min-width:0}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=checkbox]{justify-self:start;width:18px;height:18px;margin:0}dialog#vfx_new_pack .dialog_form_description{justify-self:end}
         dialog#vfx_new_pack{width:min(760px,calc(100vw - 32px))}dialog#vfx_new_pack .dialog_content{margin:22px 28px 12px}dialog#vfx_new_pack .dialog_bar.form_bar{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr);align-items:center;column-gap:20px;min-height:38px;margin:10px 0}dialog#vfx_new_pack .dialog_bar.form_bar>label.name_space_left{width:auto;min-width:0;float:none;padding:0;line-height:1.35}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=text]{width:100%;box-sizing:border-box;min-width:0}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=checkbox]{justify-self:start;width:18px;height:18px;margin:0}dialog#vfx_new_pack .dialog_form_description{justify-self:end}
         .vfx-sync p{margin:12px 0;line-height:1.5}.vfx-sync label{display:flex;flex-direction:column;gap:6px;margin:12px 0}.vfx-sync select{width:100%;min-width:0}.vfx-sync-files{max-height:45vh;overflow:auto}.vfx-sync table{table-layout:fixed;border-collapse:collapse}.vfx-sync th,.vfx-sync td{text-align:left;padding:8px;border-bottom:1px solid var(--color-border);overflow-wrap:anywhere}.vfx-sync th:last-child{width:130px}
