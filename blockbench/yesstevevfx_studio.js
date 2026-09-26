@@ -1182,9 +1182,13 @@
           if (values.open !== false) {
             if (studio) saveSettings(studio);
             studio = scan(root);
-            showStudio();
+            const starter = studio.effects.find(effect => effect.enabled) || studio.effects[0];
+            if (starter) preview(starter, {allowIncomplete: true});
+            else showModelPicker();
+            Blockbench.showQuickMessage('特效包已创建，已打开初始 geo 模型和动画。', 4000);
+          } else {
+            Blockbench.showMessageBox({title: '特效包已创建', message: `已创建特效包：\n${root}\n\n已生成可直接打开的空模型和动画文件。文件名由你填写，插件自动规范为 .geo.json 和 .animation.json。`});
           }
-          Blockbench.showMessageBox({title: '特效包已创建', message: `已创建特效包：\n${root}\n\n已生成可直接打开的空模型和动画文件。文件名由你填写，插件自动规范为 .geo.json 和 .animation.json。`});
         });
       }
     }).show();
