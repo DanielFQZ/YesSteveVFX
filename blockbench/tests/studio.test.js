@@ -73,4 +73,77 @@ test('version 1 bindings migrate; explicitly unbound events do not fall back', t
   migrated.eventBindings['0#0'].particle = '';
   assert.equal(core.eventParticle(rescanned, migrated, core.events(project.animations[0].animation)[0]), '');
 });
-
+test('sync copies external particles with textures, preserves originals and reuses identical imports', t => {
+  const project = projectFixture(t), external = projectFixture(t);
+  const source = path.join(external.root, 'particles/12.json');
+  const original = fs.readFileSync(source);
+  const input = {particles: [{source}], animations: [path.join(external.root, external.animations[0].path)]};
+  const plan = core.planAssetSync(project, input);
+  assert.deepEqual(plan.missing, []);
+  assert.equal(plan.files.size, 3);
+  assert.equal(core.applyAssetSync(project, plan), 3);
+  assert.deepEqual(fs.readFileSync(source), original);
+  const copied = JSON.parse(fs.readFileSync(path.join(project.root, plan.particles[0].target)));
+  assert.equal(copied.particle_effect.description.basic_render_parameters.texture + '.png', plan.particles[0].texture);
+  assert.equal(core.planAssetSync(project, input).files.size, 0);
+  const loaded = core.scan(project.root);
+  assert.equal(loaded.particles.find(p => p.key === plan.particles[0].target).texture, plan.particles[0].texture);
+  const effect = project.effects[0]; project.effects = [effect];
+  effect.model = project.models[0].key; effect.texture = plan.particles[0].texture;
+  effect.eventBindings = Object.fromEntries(core.events(project.animations[0].animation).map(e => [e.key, {alias: e.effect, particle: plan.particles[0].target}]));
+  assert.ok(core.build(project).size > 0);
+});
+test('sync reports missing textures and supports an explicit PNG selection', t => {
+  const project = projectFixture(t), external = projectFixture(t);
+  const source = path.join(external.root, 'particles/12.json');
+  const doc = JSON.parse(fs.readFileSync(source));
+  doc.particle_effect.description.basic_render_parameters.texture = 'textures/missing';
+  fs.writeFileSync(source, JSON.stringify(doc));
+  const plan = core.planAssetSync(project, {particles: [{source}]});
+  assert.deepEqual(plan.missing, [source]);
+  assert.throws(() => core.applyAssetSync(project, plan), /指定可用贴图/);
+  const fixed = core.planAssetSync(project, {particles: [{source, texture: path.join(external.root, 'textures/color.png')}]});
+  assert.equal(fixed.missing.length, 0);
+  assert.equal(core.applyAssetSync(project, fixed), 2);
+});
+test('sync never overwrites colliding files or updates bindings on partial copy failure', t => {
+  const project = projectFixture(t), external = projectFixture(t);
+  const input = {particles: [{source: path.join(external.root, 'particles/12.json')}]};
+  const initial = core.planAssetSync(project, input);
+  const target = initial.particles[0].target;
+  fs.mkdirSync(path.dirname(path.join(project.root, target)), {recursive: true});
+  const protectedContent = Buffer.from('{}');
+  fs.writeFileSync(path.join(project.root, target), protectedContent);
+  const plan = core.planAssetSync(project, input);
+  assert.notEqual(plan.particles[0].target, target);
+  const racingTarget = plan.particles[0].target;
+  fs.writeFileSync(path.join(project.root, racingTarget), protectedContent);
+  const before = JSON.stringify(core.settings(project));
+  assert.throws(() => core.applyAssetSync(project, plan), /预览后发生变化/);
+  assert.equal(JSON.stringify(core.settings(project)), before);
+  assert.deepEqual(fs.readFileSync(path.join(project.root, target)), protectedContent);
+  assert.ok(!fs.existsSync(path.join(project.root, plan.particles[0].texture)), 'earlier copies rolled back');
+});
+test('sync keeps existing internal particle JSON and updates only its texture binding', t => {
+  const project = projectFixture(t), external = projectFixture(t);
+  const source = path.join(project.root, project.particles[0].path);
+  const before = fs.readFileSync(source);
+  const plan = core.planAssetSync(project, {particles: [{source, texture: path.join(external.root, 'textures/color.png')}]});
+  core.applyAssetSync(project, plan);
+  assert.deepEqual(fs.readFileSync(source), before);
+  assert.equal(core.scan(project.root).particles.find(p => p.path === project.particles[0].path).texture, plan.particles[0].texture);
+});
+test('sync uses edited texture bytes for particle dependencies and validates reused files', t => {
+  const project = projectFixture(t), external = projectFixture(t);
+  const image = path.join(external.root, 'textures/color.png');
+  const edited = Buffer.concat([fs.readFileSync(image), Buffer.from('edited fixture pixels')]);
+  const input = {textures: [{id: 'painted', source: image, name: 'color.png', bytes: edited}],
+    particles: [{source: path.join(external.root, 'particles/12.json')}]};
+  const plan = core.planAssetSync(project, input);
+  assert.equal(plan.particles[0].texture, plan.textures[0].target);
+  core.applyAssetSync(project, plan);
+  assert.deepEqual(fs.readFileSync(path.join(project.root, plan.textures[0].target)), edited);
+  const reused = core.planAssetSync(project, input);
+  fs.writeFileSync(path.join(project.root, reused.textures[0].target), 'changed after preview');
+  assert.throws(() => core.applyAssetSync(project, reused), /复用文件在预览后发生变化/);
+});

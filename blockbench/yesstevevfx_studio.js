@@ -184,7 +184,7 @@
     const resolved = events(compiled).map(event => {
       const point = points.find(p => p.key === event.key);
       const particle = point?.file ? project.particles.find(p => path.resolve(fileAt(project.root, p.path)) === path.resolve(point.file)) : null;
-      if (point?.file && !particle) throw new Error(`粒子文件不在工程内：${point.file}。请复制到工程并重新扫描资产。`);
+      if (point?.file && !particle) throw new Error(`粒子文件不在工程内：${point.file}。请使用 VFX → 同步外部资产到特效包。`);
       return {event, particle: particle?.key || (effect && eventParticle(project, effect, event))};
     });
     const bindings = {};
@@ -381,13 +381,158 @@
     }
     return {target, backup: backedUp ? backup : '', count: output.size};
   }
-  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry};
+  function particleTextureFile(source, json, explicit) {
+    const exists = file => file && fs.existsSync(file) && fs.statSync(file).isFile();
+    if (explicit) return exists(explicit) ? path.resolve(explicit) : '';
+    const ref = json.particle_effect?.description?.basic_render_parameters?.texture;
+    if (typeof ref !== 'string' || !ref) return '';
+    if (path.isAbsolute(ref)) return exists(ref) ? path.resolve(ref) : '';
+    const rel = ref.replace(/^[a-z0-9_.-]+:/i, '').replace(/\.png$/i, '') + '.png';
+    const candidates = [path.resolve(path.dirname(source), rel)];
+    // Resource-pack texture paths are relative to the ancestor of particles/.
+    let dir = path.dirname(source);
+    while (path.dirname(dir) !== dir) {
+      if (path.basename(dir).toLowerCase() === 'particles') candidates.push(path.resolve(path.dirname(dir), rel));
+      dir = path.dirname(dir);
+    }
+    return uniqueMatch([...new Set(candidates)].filter(exists)) || '';
+  }
+  function planAssetSync(project, input) {
+    const plan = {root: project.root, files: new Map(), expected: new Map(), rows: [], particles: [], textures: [], animations: [], missing: []};
+    const read = file => {
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) throw new Error('找不到资产文件：' + file);
+      if (fs.statSync(file).size > 16 * 1024 * 1024) throw new Error('单个资产超过 16 MiB：' + file);
+      return fs.readFileSync(file);
+    };
+    function put(source, bytes, kind, extension, name) {
+      if (!bytes.length || bytes.length > 16 * 1024 * 1024) throw new Error('资产为空或超过 16 MiB：' + source);
+      if (kind === 'textures' && !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error('贴图必须为 PNG：' + source);
+      const original = name || path.basename(source);
+      const stem = path.basename(original, path.extname(original)).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || 'asset';
+      const base = `${kind}/imported/${stem}_${hash(bytes)}`;
+      let target = `${base}${extension}`, index = 2;
+      while ((plan.files.has(target) && !plan.files.get(target).equals(bytes)) ||
+        (fs.existsSync(fileAt(project.root, target)) && !read(fileAt(project.root, target)).equals(bytes))) target = `${base}_${index++}${extension}`;
+      const reused = fs.existsSync(fileAt(project.root, target)) || plan.files.has(target);
+      plan.expected.set(target, bytes);
+      if (!reused) plan.files.set(target, bytes);
+      plan.rows.push({source, target, kind, status: reused ? '复用已有文件' : '复制到包内'});
+      return target;
+    }
+    const textures = new Map();
+    function texture(file, bytes, name) {
+      const identity = bytes ? 'bytes:' + hash(bytes) + ':' + name : path.resolve(file);
+      if (textures.has(identity)) return textures.get(identity);
+      const data = bytes || read(file);
+      const target = !bytes && inside(project.root, file) ? relative(project.root, file) : put(file || name, data, 'textures', '.png', name);
+      if (!data.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error('贴图必须为 PNG：' + file);
+      textures.set(identity, target);
+      if (file && bytes) textures.set(path.resolve(file), target);
+      return target;
+    }
+    for (const item of input.textures || []) {
+      plan.textures.push({id: item.id, target: texture(item.source, item.bytes, item.name)});
+    }
+    for (const item of input.particles || []) {
+      const json = JSON.parse(read(item.source).toString('utf8').replace(/^\uFEFF/, ''));
+      if (!json.particle_effect?.description?.basic_render_parameters) throw new Error('不是有效的 Bedrock 粒子：' + item.source);
+      const sourceTexture = particleTextureFile(item.source, json, item.texture);
+      if (!sourceTexture) { plan.missing.push(item.source); continue; }
+      const targetTexture = texture(sourceTexture);
+      let target;
+      if (inside(project.root, item.source)) {
+        target = relative(project.root, item.source);
+        plan.rows.push({source: item.source, target, kind: 'particles', status: '更新包内贴图绑定'});
+      } else {
+        json.particle_effect.description.basic_render_parameters.texture = targetTexture.replace(/\.png$/i, '');
+        // Editor-only external paths must not travel into a portable copy.
+        if (json.particle_effect.description.preview_texture) delete json.particle_effect.description.preview_texture;
+        target = put(item.source, Buffer.from(JSON.stringify(json, null, 2) + '\n'), 'particles', '.json');
+      }
+      plan.particles.push({source: item.source, target, texture: targetTexture, json});
+    }
+    for (const source of [...new Set(input.animations || [])]) {
+      if (inside(project.root, source)) continue;
+      const bytes = read(source), json = JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, ''));
+      if (!json.animations || typeof json.animations !== 'object' || Array.isArray(json.animations)) throw new Error('不是有效的动画文件：' + source);
+      const target = put(source, bytes, 'animations', '.json');
+      plan.animations.push({source, target, json});
+    }
+    const existing = filesIn(project.root);
+    const bytes = existing.reduce((n, file) => n + fs.statSync(fileAt(project.root, file)).size, 0) + [...plan.files.values()].reduce((n, b) => n + b.length, 0);
+    if (existing.length + plan.files.size > 4096 || bytes > 128 * 1024 * 1024) throw new Error('同步后特效包会超过资源大小限制');
+    return plan;
+  }
+  function applyAssetSync(project, plan) {
+    if (project.root !== plan.root || plan.missing.length) throw new Error('请先为所有粒子指定可用贴图');
+    // Copy first without ever replacing an existing file. A partial I/O failure
+    // removes only files created by this operation; source assets stay intact.
+    for (const [rel, bytes] of plan.expected) if (!plan.files.has(rel) &&
+      (!fs.existsSync(fileAt(project.root, rel)) || !fs.readFileSync(fileAt(project.root, rel)).equals(bytes))) throw new Error('复用文件在预览后发生变化，请重新同步：' + rel);
+    const created = [];
+    try {
+      for (const [rel, bytes] of plan.files) {
+        const dest = fileAt(project.root, rel);
+        fs.mkdirSync(path.dirname(dest), {recursive: true});
+        if (fs.existsSync(dest)) {
+          if (!fs.readFileSync(dest).equals(bytes)) throw new Error('目标文件在预览后发生变化，请重新同步：' + rel);
+          continue;
+        }
+        fs.writeFileSync(dest, bytes, {flag: 'wx'}); created.push(dest);
+      }
+    } catch (error) { for (const file of created) fs.unlinkSync(file); throw error; }
+    const next = {...project, assets: [...project.assets], textures: [...project.textures], particles: project.particles.map(p => ({...p})), animations: [...project.animations]};
+    function asset(key, type) { if (!next.assets.some(a => a.path === key)) next.assets.push({path: key, type}); }
+    for (const key of new Set([...plan.textures.map(t => t.target), ...plan.particles.map(p => p.texture)])) {
+      if (!next.textures.some(t => t.key === key)) next.textures.push({key, path: key});
+      asset(key, '贴图');
+    }
+    for (const p of plan.particles) {
+      const entry = {key: p.target, path: p.target, id: p.json.particle_effect.description.identifier || '', json: p.json, texture: p.texture};
+      const index = next.particles.findIndex(particle => particle.key === p.target);
+      if (index === -1) next.particles.push(entry); else next.particles[index] = entry;
+      asset(p.target, '粒子');
+    }
+    for (const a of plan.animations) {
+      for (const [id, animation] of Object.entries(a.json.animations)) {
+        const key = `${a.target}#${id}`;
+        if (!next.animations.some(source => source.key === key)) next.animations.push({key, path: a.target, id, animation});
+      }
+      asset(a.target, '动画');
+    }
+    try { saveSettings(next); }
+    catch (error) { for (const file of created) fs.unlinkSync(file); throw error; }
+    Object.assign(project, next);
+    return created.length;
+  }
+  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync};
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
   let studio = null, dialog = null, style = null, menu = null;
   const actions = [];
   let originalSaveAnimation = null, saveAnimationHook = null;
+  const syncUndo = new WeakMap();
+  function restoreSyncState(entry, phase) {
+    const record = syncUndo.get(entry);
+    if (!record) return;
+    const {session} = record, state = record[phase];
+    session.texture = state.texture;
+    session.textureObject = session.project.textures.find(t => t.uuid === state.textureId);
+    session.animationObjects = new Map(state.animationObjects);
+    session.snapshots = new Map(state.snapshots);
+    for (const [key, texture] of state.effectTextures) {
+      const effect = session.studio.effects.find(e => e.key === key);
+      if (effect) effect.texture = texture;
+    }
+    for (const [key, texture] of state.particleTextures) {
+      const particle = session.studio.particles.find(p => p.key === key);
+      if (particle) particle.texture = texture;
+    }
+    saveSettings(session.studio);
+  }
+  const undoSyncListener = ({entry}) => guard(() => restoreSyncState(entry, 'before'));
+  const redoSyncListener = ({entry}) => guard(() => restoreSyncState(entry, 'after'));
   let picker = null;
   function activeStudio() {
     const session = sessions.get(Project?.uuid);
@@ -401,6 +546,110 @@
     if (!studio) throw new Error('请先导入文件夹');
     saveSettings(studio);
     Blockbench.showQuickMessage('VFX 工程绑定已保存');
+  }
+  function syncExternalAssets() {
+    const session = sessions.get(Project?.uuid);
+    if (!session || session.studio !== studio) throw new Error('请先通过 VFX 打开要编辑的模型，再同步当前标签的外部资产');
+    const points = [];
+    const particleInputs = new Map();
+    for (const animation of Animation.all) for (const frame of animation.animators.effects?.particle || []) {
+      for (const point of frame.data_points) {
+        if (!point.file) continue;
+        const source = path.resolve(point.file);
+        const particle = studio.particles.find(p => path.resolve(fileAt(studio.root, p.path)) === source);
+        const previewTexture = Animator.particle_effects[point.file]?.config.preview_texture;
+        const texture = previewTexture || (particle?.texture ? fileAt(studio.root, particle.texture) : '');
+        if (particle?.texture && texture && inside(studio.root, texture) && path.resolve(texture) === path.resolve(fileAt(studio.root, particle.texture))) continue;
+        particleInputs.set(source, {source, texture});
+        points.push({animation, frame, point, source});
+      }
+    }
+    const textures = Texture.all.filter(t => !t.path || !inside(studio.root, t.path) || !studio.textures.some(a => fileAt(studio.root, a.path) === t.path));
+    const input = {particles: [...particleInputs.values()], textures: textures.map(t => ({id: t.uuid, source: t.path, name: t.name,
+      // Retain painting changes and embedded textures instead of copying a stale disk image.
+      bytes: !t.path || t.saved === false || t.internal || !/\.png$/i.test(t.path) ? Buffer.from(t.getBase64(), 'base64') : undefined})),
+      animations: Animation.all.map(a => a.path).filter(file => file && !inside(studio.root, file))};
+    const context = {session, points, textures, animations: [...Animation.all], defaultTexture: Texture.getDefault()?.uuid || ''};
+    showAssetSyncPlan(context, input);
+  }
+  function showAssetSyncPlan(context, input) {
+    const plan = planAssetSync(studio, input);
+    if (plan.missing.length) {
+      const form = Object.fromEntries(plan.missing.map((source, index) => ['texture_' + index,
+        {label: '粒子贴图：' + source, type: 'file', extensions: ['png'], filetype: 'PNG 贴图', readtype: 'none'}]));
+      new Dialog({id: 'vfx_sync_textures', title: '请选择未找到的粒子贴图', width: 850, form,
+        onConfirm(values) { guard(() => {
+          plan.missing.forEach((source, i) => {
+            if (!values['texture_' + i]) throw new Error('尚未指定贴图：' + source);
+            input.particles.find(p => p.source === source).texture = values['texture_' + i];
+          });
+          this.hide(); showAssetSyncPlan(context, input);
+        }); }}).show();
+      return;
+    }
+    if (!plan.rows.length) { Blockbench.showQuickMessage('当前标签引用的资产都已在特效包内', 4000); return; }
+    new Dialog({id: 'vfx_sync_assets', title: '同步外部资产到特效包', width: 1000, confirmIndex: 0, buttons: ['复制并更新引用', '取消'],
+      component: {
+        data: {rows: plan.rows, root: studio.root, model: !!context.session.model, modelTexture: context.defaultTexture,
+          textures: Texture.all.map(t => ({id: t.uuid, name: t.name, path: t.path || '尚未保存的贴图'}))},
+        template: `<div class="vfx-studio vfx-sync"><p class="vfx-path">目标特效包：{{root}}</p>
+          <p>复制当前标签引用的粒子、贴图和外部动画，保留外部原文件。相同内容可复用，同名不同内容会使用独立文件名。</p>
+          <label v-if="model && textures.length">此模型使用的贴图 <select v-model="modelTexture"><option v-for="t in textures" :key="t.id" :value="t.id">{{t.name}} · {{t.path}}</option></select></label>
+          <div class="vfx-sync-files"><table><thead><tr><th>源资产</th><th>包内位置</th><th>处理方式</th></tr></thead><tbody><tr v-for="(r, i) in rows" :key="i"><td>{{r.source}}</td><td>{{r.target}}</td><td>{{r.status}}</td></tr></tbody></table></div>
+          <p>完成后请保存动画，让新的粒子引用写回源文件，再导出到客户端。复制出的 PNG 包含当前绘制结果。</p></div>`
+      },
+      onConfirm() { guard(() => {
+        if (Project !== context.session.project) throw new Error('当前标签已改变，请返回原模型重新同步');
+        const selectedTexture = Texture.all.find(t => t.uuid === this.content_vue.modelTexture);
+        const snapshot = () => ({texture: context.session.texture, textureId: context.session.textureObject?.uuid,
+          animationObjects: [...context.session.animationObjects], snapshots: [...context.session.snapshots],
+          effectTextures: studio.effects.filter(e => e.model === context.session.model).map(e => [e.key, e.texture]),
+          particleTextures: studio.particles.filter(p => plan.particles.some(i => i.target === p.key)).map(p => [p.key, p.texture])});
+        const before = snapshot();
+        const copied = applyAssetSync(studio, plan);
+        const affectedAnimations = [...new Set([...context.points.map(p => p.animation), ...context.animations.filter(a => plan.animations.some(p => p.source === a.path))])];
+        Undo.initEdit({textures: context.textures, animations: affectedAnimations, elements: selectedTexture ? Cube.all : []});
+        try {
+          for (const record of context.points) {
+            const imported = plan.particles.find(p => p.source === record.source);
+            record.point.file = fileAt(studio.root, imported.target);
+            record.point.effect = stableAlias(imported.target);
+            record.animation.saved = false;
+          }
+          for (const item of plan.textures) {
+            const texture = context.textures.find(t => t.uuid === item.id);
+            texture.path = fileAt(studio.root, item.target); texture.name = path.basename(texture.path);
+            texture.mode = 'link'; texture.internal = false; texture.saved = true;
+            texture.setSourceFromLocalFile(); texture.startWatcher();
+          }
+          for (const animation of context.animations) {
+            const imported = plan.animations.find(p => p.source === animation.path);
+            if (!imported) continue;
+            const id = animation.saved_name || animation.name;
+            const source = studio.animations.find(a => a.path === imported.target && a.id === id);
+            animation.path = fileAt(studio.root, imported.target);
+            if (source) {
+              context.session.animationObjects.set(animation.uuid, source.key);
+              context.session.snapshots.set(animation.uuid, JSON.stringify(source.animation));
+            }
+            animation.saved = false;
+          }
+          if (selectedTexture && context.session.model) {
+            const key = relative(studio.root, selectedTexture.path);
+            context.session.texture = key; context.session.textureObject = selectedTexture;
+            for (const effect of studio.effects.filter(e => e.model === context.session.model)) effect.texture = key;
+            Cube.all.forEach(cube => cube.applyTexture(selectedTexture, true)); selectedTexture.select();
+          }
+        } finally {
+          const entry = Undo.finishEdit('同步外部 VFX 资产');
+          if (entry) syncUndo.set(entry, {session: context.session, before, after: snapshot()});
+        }
+        saveSettings(studio);
+        for (const p of plan.particles) loadParticlePreview(find(studio.particles, p.target, '粒子'));
+        Animator.preview(); this.hide();
+        Blockbench.showMessageBox({title: '外部资产同步完成', message: `已复制 ${copied} 个文件，更新 ${context.points.length} 个粒子事件引用。\n\n请使用“保存当前编辑回工程”或动画保存按钮，将引用写回源文件。撤销可恢复当前编辑引用，已复制文件会保留在包内。`});
+      }); }
+    }).show();
   }
   function loadParticlePreview(particle) {
     const absolute = fileAt(studio.root, particle.path);
@@ -443,6 +692,7 @@
         'VFX → 资产与绑定：重新打开当前工程。',
         'VFX → 切换模型 / 打开其他模型：选择同一包里的另一个 geo 或 geometry。',
         'VFX → 重新扫描资产：将新的模型、动画、粒子、贴图放入工程目录后，更新资产列表。',
+        'VFX → 同步外部资产到特效包：复制当前标签引用的外部粒子、贴图和动画，更新引用后再保存。',
         'VFX → 保存当前编辑回工程：写回当前预览标签的模型和动画。',
         'VFX → 导出到客户端：写入 config/yesstevevfx/packs，并把旧包移到 vfx-backups。',
         '',
@@ -656,8 +906,9 @@
     for (const animation of options.animations || Animation.all) {
       let key = session.animationObjects.get(animation.uuid);
       let source = studio.animations.find(a => a.key === key);
+      if (source && animation.path && path.resolve(animation.path) !== path.resolve(fileAt(studio.root, source.path))) source = null;
       if (!source) {
-        if (animation.path && !inside(studio.root, animation.path)) throw new Error('动画文件不在工程内，请先复制到工程并重新扫描：' + animation.path);
+        if (animation.path && !inside(studio.root, animation.path)) throw new Error('动画文件不在工程内，请先使用 VFX → 同步外部资产到特效包：' + animation.path);
         const rel = animation.path ? relative(studio.root, animation.path) : session.animationFile || `animations/${token(animation.name)}.animation.json`;
         key = `${rel}#${animation.name}`;
         source = {key, path: rel, id: animation.name};
@@ -839,7 +1090,7 @@
         methods: {
           save() { guard(saveWorkspace); }, check() { this.message = validate(studio).join('\n') || '检查通过：每个动画事件、定位器和贴图都有明确绑定。'; },
           help() { showHelp(); }, preview() { guard(() => preview(this.current)); }, capture() { guard(capture); this.$forceUpdate(); },
-          exportClient() { guard(exportClient); }, exportFolder() { guard(() => { const dir = Blockbench.pickDirectory({title: '选择导出父目录（将创建包 ID 子目录）'}); if (dir) exportTo(dir); }); },
+          syncAssets() { guard(syncExternalAssets); }, exportClient() { guard(exportClient); }, exportFolder() { guard(() => { const dir = Blockbench.pickDirectory({title: '选择导出父目录（将创建包 ID 子目录）'}); if (dir) exportTo(dir); }); },
           binding(event) { return eventParticle(this.p, this.current, event); },
           bind(event, value) { this.$set(this.current.eventBindings, event.key, {alias: event.effect, particle: value}); },
           modelChanged() { this.current.modelUnresolved = false; },
@@ -848,7 +1099,7 @@
         },
         template: `<div class="vfx-studio">
           <p class="vfx-path">{{p.root}}</p>
-          <div class="vfx-toolbar"><button @click="help">使用说明</button><button @click="save">保存工程绑定</button><button @click="check">检查引用</button><button @click="capture">保存当前编辑回工程</button><button @click="exportFolder">导出到文件夹</button><button @click="exportClient">导出到客户端</button></div>
+          <div class="vfx-toolbar"><button @click="help">使用说明</button><button @click="save">保存工程绑定</button><button @click="check">检查引用</button><button @click="syncAssets">同步外部资产到特效包</button><button @click="capture">保存当前编辑回工程</button><button @click="exportFolder">导出到文件夹</button><button @click="exportClient">导出到客户端</button></div>
           <div class="vfx-toolbar"><label>包 ID <input v-model="p.packId"></label><label>显示名 <input v-model="p.displayName"></label></div>
           <p>{{p.models.length}} 模型 · {{p.animations.length}} 动画 · {{p.particles.length}} 粒子 · {{p.textures.length}} 贴图</p>
           <div class="vfx-toolbar"><button @click="tab='effects'">特效绑定</button><button @click="tab='particles'">粒子与贴图</button><button @click="tab='assets'">全部资产</button></div>
@@ -906,7 +1157,10 @@
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
     icon: 'auto_awesome', version: '0.2.0', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
+      Blockbench.on('undo', undoSyncListener);
+      Blockbench.on('redo', redoSyncListener);
       style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}' + `
+        .vfx-sync p{margin:12px 0;line-height:1.5}.vfx-sync label{display:flex;flex-direction:column;gap:6px;margin:12px 0}.vfx-sync select{width:100%;min-width:0}.vfx-sync-files{max-height:45vh;overflow:auto}.vfx-sync table{table-layout:fixed;border-collapse:collapse}.vfx-sync th,.vfx-sync td{text-align:left;padding:8px;border-bottom:1px solid var(--color-border);overflow-wrap:anywhere}.vfx-sync th:last-child{width:130px}
         .vfx-models{display:flex;flex-direction:column;gap:16px;min-width:0;line-height:1.5}
         .vfx-models p{margin:0}
         .vfx-models-header{display:grid;gap:6px;min-width:0}
@@ -949,6 +1203,7 @@
         ['new_pack', '新建特效包', 'create_new_folder', createPack],
         ['models', '切换模型 / 打开其他模型', 'view_in_ar', showModelPicker],
         ['rescan', '重新扫描资产', 'refresh', rescan],
+        ['sync_assets', '同步外部资产到特效包', 'drive_file_move', syncExternalAssets],
         ['manage', '资产与绑定', 'account_tree', showStudio],
         ['help', '使用说明', 'help_outline', showHelp],
         ['capture', '保存当前编辑回工程', 'save', capture],
@@ -961,6 +1216,8 @@
       MenuBar.update();
     },
     onunload() {
+      Blockbench.removeListener('undo', undoSyncListener);
+      Blockbench.removeListener('redo', redoSyncListener);
       if (AnimationCodec.codecs.bedrock.saveAnimation === saveAnimationHook) AnimationCodec.codecs.bedrock.saveAnimation = originalSaveAnimation;
       dialog?.delete(); picker?.delete(); menu?.delete(); actions.forEach(action => action.delete()); MenuBar.update(); style?.delete(); sessions.clear();
     }
