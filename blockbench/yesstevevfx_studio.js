@@ -45,9 +45,11 @@
     return files.sort();
   }
   function events(animation) {
+    // BB serializes integer timestamps as "0.0" but live keyframes use 0.
+    // Canonicalize only the binding key; retain the original JSON time for writes.
     return Object.entries(animation?.particle_effects || {}).flatMap(([time, value]) =>
       (Array.isArray(value) ? value : [value]).map((event, index) => ({
-        time, index, effect: typeof event === 'string' ? event : event.effect,
+        time, index, key: `${Number(time)}#${index}`, effect: typeof event === 'string' ? event : event.effect,
         locator: typeof event === 'object' ? event.locator || '' : ''
       })));
   }
@@ -103,10 +105,12 @@
       while (used.has(name)) name = `${base}_${index++}`;
       used.add(name);
       const geometryId = entity?.geometry?.default || Object.values(entity?.geometry || {})[0];
-      const model = uniqueMatch(project.models.filter(m => m.id === geometryId)) || uniqueMatch(project.models);
+      const model = geometryId ? uniqueMatch(project.models.filter(m => m.id === geometryId)) : uniqueMatch(project.models);
+      if (geometryId && !model) project.warnings.push(`模型引用无法唯一解析：${geometryId}，请明确选择模型。`);
+      if (!geometryId && project.models.length > 1) project.warnings.push(`${animation?.id || name}：有多个候选模型，请在模型选择窗口关联动画。`);
       const texture = textureMatch(entity?.textures?.default || Object.values(entity?.textures || {})[0], project.textures);
       const effect = {key: `effect_${project.effects.length + 1}`, enabled: true, name, animation: animation?.key || '', model: model?.key || '', texture,
-        duration: definition?.duration_ticks || Math.max(20, Math.ceil((animation?.animation?.animation_length || 5) * 20) + 20), bindings: {}};
+        modelUnresolved: !model && (!!geometryId || project.models.length > 1), eventBindings: {}, duration: definition?.duration_ticks || Math.max(20, Math.ceil((animation?.animation?.animation_length || 5) * 20) + 20), bindings: {}};
       for (const event of events(animation?.animation)) {
         const ref = entity?.particle_effects?.[event.effect];
         const particle = uniqueMatch(project.particles.filter(p => ref ? p.id === ref :
@@ -134,15 +138,96 @@
     const configPath = path.join(root, 'vfx-project.json');
     if (fs.existsSync(configPath)) {
       const config = readJson(configPath);
-      if (config.version !== 1) throw new Error('不支持的 vfx-project.json 版本');
+      if (![1, 2].includes(config.version)) throw new Error('不支持的 vfx-project.json 版本');
       project.packId = config.packId; project.displayName = config.displayName;
       project.effects = config.effects;
       for (const particle of project.particles) particle.texture = config.particleTextures?.[particle.key] || particle.texture;
+      for (const animation of project.animations) if (!project.effects.some(e => e.animation === animation.key)) {
+        const model = uniqueMatch(project.models);
+        const effect = makeEffect(project, animation, model?.key || '');
+        effect.modelUnresolved = project.models.length > 1;
+        effect.texture = modelTexture?.key || '';
+        project.effects.push(effect);
+      }
+    }
+    for (const effect of project.effects) {
+      effect.bindings ||= {};
+      effect.eventBindings ||= {};
+      // Version 1 had only alias bindings. Migrate only known file identities.
+      const animation = project.animations.find(a => a.key === effect.animation);
+      for (const event of events(animation?.animation)) {
+        if (!effect.eventBindings[event.key] && effect.bindings[event.effect]) {
+          effect.eventBindings[event.key] = {alias: event.effect, particle: effect.bindings[event.effect]};
+        }
+      }
     }
     return project;
   }
+  const stableAlias = key => 'vfx_' + hash(key);
+  function eventParticle(project, effect, event) {
+    const bound = effect.eventBindings?.[event.key];
+    // A moved/inserted keyframe must never inherit the old occupant's binding.
+    if (bound && bound.alias === event.effect) return bound.particle;
+    const explicit = effect.bindings?.[event.effect];
+    if (explicit) return explicit;
+    return uniqueMatch(project.particles.filter(p => stableAlias(p.key) === event.effect ||
+      previewIdentifier(p.path) === event.effect || p.id === event.effect))?.key || '';
+  }
+  function setEventAlias(animation, event, alias) {
+    const value = animation.particle_effects[event.time];
+    const old = Array.isArray(value) ? value[event.index] : value;
+    const replacement = typeof old === 'string' ? {effect: alias} : {...old, effect: alias};
+    if (Array.isArray(value)) value[event.index] = replacement;
+    else animation.particle_effects[event.time] = replacement;
+  }
+  function captureBindings(project, effect, compiled, points) {
+    const resolved = events(compiled).map(event => {
+      const point = points.find(p => p.key === event.key);
+      const particle = point?.file ? project.particles.find(p => path.resolve(fileAt(project.root, p.path)) === path.resolve(point.file)) : null;
+      if (point?.file && !particle) throw new Error(`粒子文件不在工程内：${point.file}。请复制到工程并重新扫描资产。`);
+      return {event, particle: particle?.key || (effect && eventParticle(project, effect, event))};
+    });
+    const bindings = {};
+    for (const {event, particle} of resolved) {
+      if (!particle) continue;
+      const ambiguous = resolved.some(other => other.event.effect === event.effect && other.particle && other.particle !== particle);
+      const alias = !event.effect || event.effect.startsWith('yesstevevfx:preview/') || ambiguous ? stableAlias(particle) : event.effect;
+      setEventAlias(compiled, event, alias);
+      bindings[event.key] = {alias, particle};
+    }
+    return bindings;
+  }
+  function modelViews(project) {
+    const views = project.models.map(model => {
+      const effects = project.effects.filter(e => e.model === model.key);
+      const filePaths = [...new Set(effects.map(e => project.animations.find(a => a.key === e.animation)?.path).filter(Boolean))];
+      const animations = project.animations.filter(a => filePaths.includes(a.path));
+      return {key: model.key, model, effects, filePaths, animations,
+        files: filePaths.map(path => ({path, count: animations.filter(a => a.path === path).length})),
+        particles: new Set(effects.flatMap(e => events(project.animations.find(a => a.key === e.animation)?.animation)
+          .map(event => eventParticle(project, e, event)).filter(Boolean))).size,
+        bones: model.geometry.bones?.length || 0,
+        cubes: (model.geometry.bones || []).reduce((n, bone) => n + (bone.cubes?.length || 0), 0)};
+    });
+    const particleOnly = project.effects.filter(e => !e.model && !e.modelUnresolved);
+    if (particleOnly.length) {
+      const filePaths = [...new Set(particleOnly.map(e => project.animations.find(a => a.key === e.animation)?.path).filter(Boolean))];
+      const animations = project.animations.filter(a => filePaths.includes(a.path));
+      views.push({key: '', model: null, effects: particleOnly, files: filePaths.map(path => ({path, count: animations.filter(a => a.path === path).length})), animations, bones: 0, cubes: 0});
+    }
+    return views;
+  }
+  function makeEffect(project, animation, model = '') {
+    const base = (animation?.id.split('.').pop() || 'effect').toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+    let name = /^[a-z0-9]/.test(base) ? base.slice(0, 80) : 'effect';
+    const stem = name;
+    for (let n = 2; project.effects.some(e => e.name === name); n++) name = `${stem}_${n}`;
+    return {key: crypto.randomUUID(), name, enabled: true, model, modelUnresolved: false, texture: '',
+      animation: animation?.key || '', duration: Math.max(20, Math.ceil((animation?.animation.animation_length || 5) * 20) + 20),
+      bindings: {}, eventBindings: {}};
+  }
   function settings(project) {
-    return {version: 1, packId: project.packId, displayName: project.displayName, effects: clone(project.effects),
+    return {version: 2, packId: project.packId, displayName: project.displayName, effects: clone(project.effects),
       particleTextures: Object.fromEntries(project.particles.map(p => [p.key, p.texture]))};
   }
   function find(items, key, label) {
@@ -162,12 +247,15 @@
         if (names.has(effect.name)) throw new Error('特效名重复');
         names.add(effect.name);
         if (!Number.isInteger(Number(effect.duration)) || effect.duration < 1 || effect.duration > 72000) throw new Error('持续时间必须为 1–72000 tick');
+        if (effect.modelUnresolved && !effect.model) throw new Error('模型关系未确认，请在模型与动画绑定中选择模型或明确设为仅粒子');
         const model = effect.model ? find(project.models, effect.model, '模型') : null;
         if (model) find(project.textures, effect.texture, '模型贴图');
         const animation = effect.animation ? find(project.animations, effect.animation, '动画') : null;
+        const timeKeys = Object.keys(animation?.animation.particle_effects || {});
+        if (timeKeys.some(t => !Number.isFinite(Number(t))) || new Set(timeKeys.map(Number)).size !== timeKeys.length) throw new Error('粒子事件时间非法或重复（例如同时存在 0 和 0.0），请在源动画中合并该时间点');
         const locators = new Set((model?.geometry.bones || []).flatMap(bone => Object.keys(bone.locators || {})));
         for (const event of events(animation?.animation)) {
-          const particle = find(project.particles, effect.bindings[event.effect], `事件“${event.effect}”的粒子`);
+          const particle = find(project.particles, eventParticle(project, effect, event), `事件“${event.effect}”的粒子`);
           find(project.textures, particle.texture, `${particle.path} 的贴图`);
           if (event.locator && !locators.has(event.locator)) throw new Error(`事件 ${event.effect} 引用了不存在的定位器 ${event.locator}`);
           if (particle.json.particle_effect.events && JSON.stringify(particle.json.particle_effect.events).includes('"particle_effect"')) throw new Error(`${particle.path} 包含子粒子事件，第一版暂不支持自动绑定子粒子`);
@@ -210,8 +298,10 @@
       if (effect.animation) {
         const animation = clone(find(project.animations, effect.animation, '动画').animation);
         for (const event of events(animation)) {
-          const particle = find(project.particles, effect.bindings[event.effect], '粒子');
-          entity.particle_effects[event.effect] = particleId(particle.key);
+          const particle = find(project.particles, eventParticle(project, effect, event), '粒子');
+          const alias = stableAlias(particle.key);
+          setEventAlias(animation, event, alias);
+          entity.particle_effects[alias] = particleId(particle.key);
           const doc = clone(particle.json);
           doc.particle_effect.description.identifier = particleId(particle.key);
           doc.particle_effect.description.basic_render_parameters.texture = putTexture(particle.texture);
@@ -291,12 +381,19 @@
     }
     return {target, backup: backedUp ? backup : '', count: output.size};
   }
-  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, events, fileAt, token, emptyGeometry};
+  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry};
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
   let studio = null, dialog = null, style = null, menu = null;
   const actions = [];
+  let originalSaveAnimation = null, saveAnimationHook = null;
+  let picker = null;
+  function activeStudio() {
+    const session = sessions.get(Project?.uuid);
+    if (session && ModelProject.all.includes(session.project)) studio = session.studio;
+    return studio;
+  }
   const sessions = new Map();
   const errorBox = error => { console.error('[YesSteveVFX]', error); Blockbench.showMessageBox({title: 'YesSteveVFX', message: String(error.message || error)}); };
   function guard(action) { try { return action(); } catch (error) { errorBox(error); } }
@@ -307,12 +404,10 @@
   }
   function loadParticlePreview(particle) {
     const absolute = fileAt(studio.root, particle.path);
-    // Blockbench indexes emitters by file path, while the Bedrock identifier
-    // is what appears in an animation particle frame.  Give every preview
-    // emitter a stable, unique identifier so duplicate source identifiers do
-    // not overwrite each other in the particle picker.
+    // Blockbench indexes preview emitters by absolute file path, not identifier.
     const document = clone(particle.json);
-    document.particle_effect.description.identifier = previewIdentifier(particle.path);
+    // Preview is indexed by absolute file path; retain the real identifier.
+    // Synthetic identifiers must never leak into saved animation events.
     const loaded = Animator.loadParticleEmitter(absolute, JSON.stringify(document));
     if (!loaded) throw new Error(`Blockbench 无法加载粒子：${particle.path}`);
     if (particle.texture) {
@@ -336,16 +431,18 @@
       message: [
         '**第一次使用**',
         '1. 打开 VFX → 导入工程文件夹，选择包含模型、动画、粒子 JSON 和 PNG 的文件夹；已有 config/yesstevevfx/packs/<pack> 也可以直接选择。',
-        '2. 在“特效绑定”中逐个选择 effect。动画文件里的全部动画会自动列出；取消左侧勾选即可不导出。',
-        '3. 为每个 effect 选择模型、模型贴图和动画。数字粒子事件（例如 12、2、3）必须在事件绑定下拉框中手动指定对应粒子。',
+        '2. 导入后先显示模型选择窗口，列出每个 geo / geometry、关联动画文件及动画数量。先“关联动画与贴图”，再“打开 / 切换标签”。已打开的模型会复用原标签。',
+        '3. 在“资产与绑定”中按时间与事件序号指定粒子文件。同名事件也可绑定不同粒子；数字或中文文件名不影响导出。',
         '4. 点击“检查引用”，确认没有未绑定的粒子、贴图或定位器。点击“打开 / 更新 Blockbench 预览”后，在动画模式按空格播放。',
-        '动画列表显示源 animation.json 文件名；动画行/文件分组的保存按钮直接写回该文件。原生保存不生成 VFX 备份，导出前请保存修改。',
+        '动画列表载入关联文件中的全部动画。动画行/文件分组的保存按钮写回源文件，并由 VFX 校正粒子绑定、生成备份；共享动画发生保存冲突时会阻止覆盖。',
         '5. 在 Blockbench 中编辑骨骼、定位器、贴图或动画；完成后点击 VFX → 保存当前编辑回工程。原文件会先备份到工程同级的 *-edit-backups。',
         '6. 点击“导出到客户端”，选择 .minecraft；检测到 versions 时再选择具体隔离版本。进入游戏后执行 /vfx_client reload，再用 /vfx_client play <pack_id>:<effect> test 播放。',
         '',
         '**常用菜单**',
         'VFX → 导入工程文件夹：开始或切换工程。',
         'VFX → 资产与绑定：重新打开当前工程。',
+        'VFX → 切换模型 / 打开其他模型：选择同一包里的另一个 geo 或 geometry。',
+        'VFX → 重新扫描资产：将新的模型、动画、粒子、贴图放入工程目录后，更新资产列表。',
         'VFX → 保存当前编辑回工程：写回当前预览标签的模型和动画。',
         'VFX → 导出到客户端：写入 config/yesstevevfx/packs，并把旧包移到 vfx-backups。',
         '',
@@ -354,18 +451,98 @@
     });
   }
   function bindPreview(animation, effect) {
-    for (const keyframe of animation.animators.effects?.particle || []) {
-      for (const point of keyframe.data_points) {
-        const particle = studio.particles.find(p => p.key === effect.bindings[point.effect]);
-        if (!particle) continue;
-        const absolute = fileAt(studio.root, particle.path);
-        // The complete particle library is loaded before animation binding;
-        // reuse that entry so newly added timeline frames see the same file.
+    if (!effect) return;
+    for (const frame of animation.animators.effects?.particle || []) {
+      frame.data_points.forEach((point, index) => {
+        const event = {key: frame.time + '#' + index, effect: point.effect};
+        const particle = studio.particles.find(p => p.key === eventParticle(studio, effect, event));
+        if (!particle) return;
         loadParticlePreview(particle);
-        point.file = absolute;
-      }
+        point.file = fileAt(studio.root, particle.path);
+      });
     }
   }
+  function attachAnimations(session) {
+    const effects = studio.effects.filter(e => session.model ? e.model === session.model : !e.model && !e.modelUnresolved);
+    const files = new Set(effects.map(e => studio.animations.find(a => a.key === e.animation)?.path).filter(Boolean));
+    for (const filePath of files) {
+      // Always use the current disk snapshot when opening a new model tab.
+      // Existing tabs retain their original snapshot for conflict detection.
+      const document = readJson(fileAt(studio.root, filePath));
+      for (const source of studio.animations.filter(a => a.path === filePath)) {
+        if (document.animations?.[source.id]) source.animation = clone(document.animations[source.id]);
+      }
+      const sources = studio.animations.filter(a => a.path === filePath);
+      const missing = sources.filter(a => !session.project.animations.some(live => session.animationObjects.get(live.uuid) === a.key));
+      if (!missing.length) continue;
+      const file = {name: path.basename(filePath), path: fileAt(studio.root, filePath),
+        content: JSON.stringify({format_version: '1.8.0', animations: Object.fromEntries(missing.map(a => [a.id, a.animation]))})};
+      const loaded = AnimationCodec.codecs.bedrock.loadFile(file);
+      for (const animation of loaded) {
+        const source = sources.find(a => a.id === animation.name);
+        session.animationObjects.set(animation.uuid, source.key);
+        session.snapshots.set(animation.uuid, JSON.stringify(source.animation));
+        const effect = effects.find(e => e.animation === source.key);
+        // Unassigned siblings remain visible, but are not silently assigned
+        // to this model merely because they share an animation.json file.
+        if (effect) session.animationEffects.set(animation.uuid, effect);
+        bindPreview(animation, effect);
+      }
+      session.animationFile ||= filePath;
+    }
+    for (const animation of session.project.animations) {
+      const effect = effects.find(e => e.animation === session.animationObjects.get(animation.uuid));
+      session.animationEffects.set(animation.uuid, effect);
+      if (animation.saved) bindPreview(animation, effect);
+    }
+  }
+  function showModelPicker() {
+    if (!studio) throw new Error('请先打开特效包');
+    refreshSavedAnimations();
+    picker?.delete();
+    picker = new Dialog({id: 'vfx_models', title: 'VFX · 选择模型', width: 1000, singleButton: true,
+      component: {
+        data: {views: modelViews(studio), search: '', root: studio.root},
+        computed: {filtered() { return this.views.filter(v => JSON.stringify([v.model?.path, v.model?.id, v.effects.map(e => e.name)]).toLowerCase().includes(this.search.toLowerCase())); }},
+        methods: {
+          open(view) { guard(() => {
+            const effect = view.effects[0] || {key: 'model_' + view.key, name: view.model.id, model: view.key,
+              texture: '', animation: '', bindings: {}, eventBindings: {}, duration: 120, enabled: false};
+            preview(effect, {allowIncomplete: true});
+          }); },
+          bind(view) { guard(() => showModelBindings(view)); },
+          assets() { picker.hide(); guard(showStudio); }
+        },
+        template: '<div class="vfx-studio"><p class="vfx-path">{{root}}</p><input placeholder="搜索模型、geometry 或特效" v-model="search"><button @click="assets">资产与绑定</button><p v-if="!views.length">尚无模型。将 geo.json、animation.json、粒子 JSON 和 PNG 放入工程目录，再使用 VFX → 重新扫描资产。</p><div class="vfx-particle" v-for="v in filtered" :key="v.key"><strong>{{v.model ? v.model.path : "仅粒子"}}</strong><p v-if="v.model">{{v.model.id}} · geometry #{{v.model.index}} · {{v.bones}} 骨骼 · {{v.cubes}} 方块</p><p>特效：{{v.effects.map(e => e.name).join("、") || "尚未关联"}} · {{v.particles || 0}} 个已绑定粒子</p><p v-for="f in v.files">{{f.path}}（文件共 {{f.count}} 个动画）</p><details v-if="v.animations.length"><summary>查看动画名称</summary><p v-for="a in v.animations">{{a.id}}</p></details><p v-if="!v.effects.length">请选择动画和贴图，插件不会猜测多模型关系。</p><button @click="open(v)">打开 / 切换标签</button><button v-if="v.model" @click="bind(v)">关联动画与贴图</button></div></div>'
+      }});
+    picker.show();
+  }
+  function showModelBindings(view) {
+    const form = {texture: {label: '模型贴图', type: 'select', value: view.effects[0]?.texture || '',
+      options: {'': '未指定', ...Object.fromEntries(studio.textures.map(t => [t.key, t.path]))}}};
+    studio.animations.forEach((a, i) => {
+      const owners = studio.effects.filter(e => e.animation === a.key && e.model !== view.key);
+      form['a' + i] = {label: a.id + ' · ' + a.path + (owners.length ? '（已有其它模型绑定，选中将新增独立特效）' : ''),
+        type: 'checkbox', value: view.effects.some(e => e.animation === a.key)};
+    });
+    new Dialog({id: 'vfx_model_bindings', title: '关联动画 · ' + view.model.id, width: 900, form,
+      onConfirm(values) { guard(() => {
+        studio.animations.forEach((a, i) => {
+          const current = studio.effects.filter(e => e.model === view.key && e.animation === a.key);
+          if (values['a' + i]) {
+            if (!current.length) {
+              const unbound = studio.effects.find(e => !e.model && e.modelUnresolved && e.animation === a.key);
+              const effect = unbound || makeEffect(studio, a, view.key);
+              effect.model = view.key; effect.modelUnresolved = false; effect.texture = values.texture; effect.enabled = true;
+              if (!unbound) studio.effects.push(effect);
+            }
+            current.forEach(e => {e.texture = values.texture; e.modelUnresolved = false;});
+          } else current.forEach(e => {e.model = ''; e.modelUnresolved = true; e.enabled = false;});
+        });
+        saveSettings(studio); this.hide(); showModelPicker();
+      }); }}).show();
+  }
+
   function showAnimationPanel() {
     Modes.options.animate.select();
     const panel = Interface.Panels.animations;
@@ -386,124 +563,101 @@
   function preview(effect, options = {}) {
     const errors = validate(studio, effect);
     if (errors.length && !options.allowIncomplete) throw new Error(errors.join('\n'));
-    const existing = [...sessions.entries()].find(([, s]) => s.studio === studio && s.effect === effect && s.project);
+    const existing = [...sessions.values()].find(s => s.studio === studio &&
+      s.model === effect.model && ModelProject.all.includes(s.project));
     if (existing) {
-      existing[1].project.select();
-      if (existing[1].model !== effect.model || existing[1].texture !== effect.texture) throw new Error('模型/贴图绑定已改变。请先保存并关闭旧预览标签，再重新打开。');
-      for (const animation of Animation.all) {
-        const animationEffect = existing[1].animationEffects.get(animation.uuid) || effect;
-        bindPreview(animation, animationEffect);
+      existing.project.select();
+      attachAnimations(existing);
+      if (effect.texture && existing.texture !== effect.texture) {
+        const asset = find(studio.textures, effect.texture, '模型贴图');
+        const texture = Texture.all.find(t => t.path === fileAt(studio.root, asset.path)) || new Texture({keep_size: true}).fromPath(fileAt(studio.root, asset.path)).add();
+        Cube.all.forEach(cube => cube.applyTexture(texture, true)); texture.select();
+        existing.texture = effect.texture; existing.textureObject = texture;
       }
-      dialog?.hide(); showAnimationPanel(); Animator.preview(); return;
+      loadParticleLibrary();
+      for (const animation of Animation.all) if (animation.saved) bindPreview(animation, existing.animationEffects.get(animation.uuid));
+      Animation.all.find(a => existing.animationObjects.get(a.uuid) === effect.animation)?.select();
+      dialog?.hide(); picker?.hide(); showAnimationPanel(); Animator.preview(); return;
     }
     const model = effect.model ? find(studio.models, effect.model, '模型') : null;
     if (model) {
       const absolute = fileAt(studio.root, model.path);
       const document = readJson(absolute);
       const geometry = document['minecraft:geometry']?.[model.index];
-      if (!geometry) throw new Error(`源文件中找不到模型：${model.path} #${model.index}`);
-      model.geometry = clone(geometry);
-      model.id = geometry.description?.identifier || '';
-      // Use the same file-opening entry point as YSM. The native codec sets
-      // export_path/export_codec, so Save Model writes back to the original JSON.
-      // Select this effect's geometry upfront; native Bedrock overwrite merges
-      // it by identifier and preserves the other geometries in the source file.
+      if (!geometry) throw new Error('源文件中找不到模型：' + model.path);
+      if (!geometry.description?.identifier || document['minecraft:geometry'].filter(g => g.description?.identifier === geometry.description.identifier).length !== 1) {
+        throw new Error('同一 geo 文件中的 geometry identifier 必须存在且唯一，才能安全地保存：' + model.path);
+      }
+      model.geometry = clone(geometry); model.id = geometry.description.identifier;
       loadModelFile({name: path.basename(absolute), path: absolute,
         content: JSON.stringify({...document, 'minecraft:geometry': [geometry]})});
+      Project.name = path.basename(model.path) + ' · ' + model.id;
     } else {
-      // Particle-only previews have no source model to save over.
       setupProject(Formats.bedrock);
       Codecs.bedrock.load({format_version: '1.12.0', 'minecraft:geometry': [emptyGeometry()]},
         {path: '', no_file: true}, {import_to_current_project: true});
-      Project.name = `VFX · ${effect.name}`;
+      Project.name = 'VFX · ' + effect.name;
     }
     const project = Project;
-    const textureAsset = effect.model ? find(studio.textures, effect.texture, '模型贴图') : null;
-    const texture = textureAsset ? new Texture({keep_size: true}).fromPath(fileAt(studio.root, textureAsset.path)).add() : null;
+    const asset = studio.textures.find(t => t.key === effect.texture);
+    const texture = asset ? (Texture.all.find(t => t.path === fileAt(studio.root, asset.path)) || new Texture({keep_size: true}).fromPath(fileAt(studio.root, asset.path)).add()) : null;
     if (texture) { texture.select(); Cube.all.forEach(cube => cube.applyTexture(texture, true)); }
     const session = {studio, effect, project, model: effect.model, texture: effect.texture, textureObject: texture,
-      animationObjects: new Map(), animationEffects: new Map()};
+      animationObjects: new Map(), animationEffects: new Map(), snapshots: new Map()};
     sessions.set(project.uuid, session);
-    if (effect.animation) {
-      const source = find(studio.animations, effect.animation, '动画');
-      // Import the complete animation file.  The selected effect is only the
-      // initial animation; all siblings remain visible in Blockbench's
-      // animation panel so the author can switch between test1..test5.
-      const fileAnimations = studio.animations.filter(animation => animation.path === source.path);
-      const animations = Object.fromEntries(fileAnimations.map(animation => [animation.id, clone(animation.animation)]));
-      const file = {name: path.basename(source.path), path: fileAt(studio.root, source.path), json: {format_version: '1.8.0', animations}};
-      file.content = JSON.stringify(file.json);
-      const loaded = typeof AnimationCodec !== 'undefined'
-        ? AnimationCodec.codecs.bedrock.loadFile(file) : Animator.loadFile(file);
-      for (const animation of loaded) {
-        const sourceAnimation = fileAnimations.find(candidate => candidate.id === animation.name);
-        const animationEffect = studio.effects.find(candidate => candidate.animation === sourceAnimation?.key) || effect;
-        session.animationObjects.set(animation.uuid, sourceAnimation?.key || source.key);
-        session.animationEffects.set(animation.uuid, animationEffect);
-        bindPreview(animation, animationEffect);
-      }
-      (loaded.find(animation => session.animationObjects.get(animation.uuid) === source.key) || loaded[0])?.select();
-      session.animationFile = source.path;
-    }
-    const particleCount = loadParticleLibrary();
-    dialog?.hide(); showAnimationPanel(); Timeline.setTime(0); Animator.preview();
-    if (errors.length) {
-      Blockbench.showQuickMessage(`已打开预览并注册 ${particleCount} 个粒子；仍有 ${errors.length} 个引用待绑定，可在资产窗口中检查。`, 6000);
-    } else {
-      Blockbench.showQuickMessage(`已打开模型预览，载入 ${Animation.all.length} 个动画并注册 ${particleCount} 个粒子。可在动画列表中切换预览。`, 6000);
-    }
+    loadParticleLibrary(); attachAnimations(session);
+    (Animation.all.find(a => session.animationObjects.get(a.uuid) === effect.animation) || Animation.all[0])?.select();
+    dialog?.hide(); picker?.hide(); showAnimationPanel(); Timeline.setTime(0); Animator.preview();
+    Blockbench.showQuickMessage('已打开源模型，载入 ' + Animation.all.length + ' 个动画、' + studio.particles.length + ' 个粒子。', 5000);
   }
-  function capture() {
+
+  function capture(options = {}) {
     const session = sessions.get(Project?.uuid);
     if (!session || session.studio !== studio) throw new Error('当前标签不是此 VFX 工程的预览标签');
     const writes = new Map();
-    if (session.model) {
+    if (session.model && options.model !== false) {
       const model = find(studio.models, session.model, '模型');
       const compiled = Codecs.bedrock.compile({raw: true});
       const geometry = clone(compiled['minecraft:geometry'][0]);
       geometry.description.identifier = model.id;
       const document = readJson(fileAt(studio.root, model.path));
+      if (document['minecraft:geometry']?.[model.index]?.description?.identifier !== model.id) throw new Error('模型文件的 geometry 顺序或标识已改变，请重新打开模型后保存：' + model.path);
       document['minecraft:geometry'][model.index] = geometry;
       writes.set(model.path, Buffer.from(JSON.stringify(document, null, 2) + '\n'));
     }
     const pendingAnimations = [];
-    for (const animation of Animation.all) {
-      const animationEffect = session.animationEffects.get(animation.uuid) || session.effect;
+    for (const animation of options.animations || Animation.all) {
       let key = session.animationObjects.get(animation.uuid);
       let source = studio.animations.find(a => a.key === key);
       if (!source) {
-        const rel = `animations/${token(animation.name)}.animation.json`;
+        if (animation.path && !inside(studio.root, animation.path)) throw new Error('动画文件不在工程内，请先复制到工程并重新扫描：' + animation.path);
+        const rel = animation.path ? relative(studio.root, animation.path) : session.animationFile || `animations/${token(animation.name)}.animation.json`;
         key = `${rel}#${animation.name}`;
         source = {key, path: rel, id: animation.name};
       }
-      // Only explicitly selected files can seed a new alias binding.
-      for (const frame of animation.animators.effects?.particle || []) for (const point of frame.data_points) {
-        if (point.file) {
-          const particle = studio.particles.find(p => path.resolve(fileAt(studio.root, p.path)) === path.resolve(point.file));
-          if (particle) {
-            const alias = particleAlias(animationEffect, particle);
-            if (alias) {
-              animationEffect.bindings[alias] = particle.key;
-              // Blockbench may put the preview emitter identifier into the
-              // Bedrock event. Store the stable source alias instead.
-              point.effect = alias;
-            }
-          }
-        }
-      }
+      const animationEffect = studio.effects.find(e => e.animation === source.key && e.model === session.model);
       const compiled = typeof AnimationCodec !== 'undefined' ? AnimationCodec.codecs.bedrock.compileAnimation(animation) : animation.compileBedrockAnimation();
-      normalizeParticleAliases(compiled, animationEffect);
       let doc = writes.has(source.path) ? JSON.parse(writes.get(source.path).toString()) :
         (fs.existsSync(fileAt(studio.root, source.path)) ? readJson(fileAt(studio.root, source.path)) : {format_version: '1.8.0', animations: {}});
+      const snapshot = session.snapshots.get(animation.uuid);
+      if (snapshot !== undefined && JSON.stringify(doc.animations[source.id]) !== snapshot) {
+        throw new Error(`动画 ${source.id} 已被其他标签或外部程序修改，已阻止覆盖。请先将当前修改另存为备份，再关闭此标签并重新打开模型。`);
+      }
+      if (snapshot === undefined && doc.animations[source.id]) throw new Error(`目标文件中已有同名动画：${source.id}，请先修改新动画名称。`);
+      if (source.id !== animation.name && doc.animations[animation.name]) throw new Error(`动画名称已存在：${animation.name}`);
+      // Match each compiled event to its actual preview file. Never infer an
+      // ambiguous particle identity from Blockbench's filename-derived alias.
+      const points = (animation.animators.effects?.particle || []).flatMap(frame => frame.data_points.map((point, index) => ({key: `${Number(frame.time)}#${index}`, file: point.file})));
+      const bindings = captureBindings(studio, animationEffect, compiled, points);
       if (source.id !== animation.name) delete doc.animations[source.id];
       doc.animations[animation.name] = compiled;
       writes.set(source.path, Buffer.from(JSON.stringify(doc, null, 2) + '\n'));
-      pendingAnimations.push({source, animation, compiled});
+      pendingAnimations.push({source, animation, compiled, bindings});
     }
-    if (session.textureObject && session.textureObject.saved === false) {
+    if (options.texture !== false && session.textureObject && session.textureObject.saved === false) {
       writes.set(session.texture, Buffer.from(session.textureObject.getBase64(), 'base64'));
     }
-    const backup = path.join(path.dirname(studio.root), `${path.basename(studio.root)}-edit-backups`, String(Date.now()));
+    const backup = path.join(path.dirname(studio.root), `${path.basename(studio.root)}-edit-backups`, `${Date.now()}-${crypto.randomBytes(3).toString('hex')}`);
     for (const [rel, bytes] of writes) {
       const dest = fileAt(studio.root, rel);
       if (fs.existsSync(dest)) { const old = fileAt(backup, rel); fs.mkdirSync(path.dirname(old), {recursive: true}); fs.copyFileSync(dest, old); }
@@ -513,41 +667,43 @@
       const model = find(studio.models, session.model, '模型');
       model.geometry = readJson(fileAt(studio.root, model.path))['minecraft:geometry'][model.index];
     }
-    for (const {source, animation, compiled} of pendingAnimations) {
+    for (const {source, animation, compiled, bindings} of pendingAnimations) {
       source.animation = clone(compiled);
-      // Stable source keys keep existing effect bindings intact when renamed in BB.
+      const previousKey = source.key;
       source.id = animation.name;
+      source.key = `${source.path}#${source.id}`;
+      let effects = studio.effects.filter(e => e.animation === previousKey);
+      if (!effects.length) {
+        const effect = makeEffect(studio, source, session.model);
+        effect.texture = session.texture; studio.effects.push(effect); effects = [effect];
+      }
+      for (const effect of effects) {
+        effect.animation = source.key;
+        // Shared animation sources have the same saved aliases, but retain
+        // each model's explicit particle overrides unless this tab edited them.
+        if (effect.model === session.model || !Object.keys(effect.eventBindings || {}).length) effect.eventBindings = clone(bindings);
+        else for (const event of events(compiled)) {
+          const previous = effect.eventBindings[event.key];
+          if (previous) previous.alias = event.effect;
+        }
+      }
       if (!studio.animations.includes(source)) studio.animations.push(source);
       session.animationObjects.set(animation.uuid, source.key);
+      for (const other of sessions.values()) if (other.studio === studio) {
+        for (const [uuid, oldKey] of other.animationObjects) if (oldKey === previousKey) other.animationObjects.set(uuid, source.key);
+      }
+      session.animationEffects.set(animation.uuid, effects.find(e => e.model === session.model));
+      session.snapshots.set(animation.uuid, JSON.stringify(compiled));
+      for (const event of events(compiled)) {
+        const point = (animation.animators.effects?.particle || []).find(f => Math.abs(f.time - Number(event.time)) < 0.000001)?.data_points[event.index];
+        if (point) point.effect = event.effect;
+      }
       animation.path = fileAt(studio.root, source.path);
       animation.saved_name = animation.name;
       animation.saved = true;
     }
     saveSettings(studio);
     Blockbench.showQuickMessage(`已保存 ${writes.size} 个编辑资产（备份位于工程同级目录）`, 5000);
-  }
-  function particleAlias(effect, particle) {
-    const existing = Object.entries(effect?.bindings || {}).find(([, key]) => key === particle.key)?.[0];
-    if (existing && !existing.startsWith('yesstevevfx:preview/')) return existing;
-    const id = String(particle.id || '').trim();
-    if (id) return id;
-    return path.posix.basename(particle.path).replace(/(?:\.particle)?\.json$/i, '') || token(particle.path);
-  }
-  function normalizeParticleAliases(animation, effect) {
-    if (!animation?.particle_effects || !effect) return;
-    for (const values of Object.values(animation.particle_effects)) {
-      const list = Array.isArray(values) ? values : [values];
-      for (const event of list) {
-        if (!event || typeof event !== 'object') continue;
-        const preview = studio.particles.find(p => previewIdentifier(p.path) === event.effect);
-        if (!preview) continue;
-        const alias = particleAlias(effect, preview);
-        if (alias) {
-          event.effect = alias;
-          effect.bindings[alias] = preview.key;
-        }
-      }
-    }
   }
   function refreshSavedAnimations() {
     // Native Save Model writes the linked geometry file. Export must read
@@ -579,12 +735,13 @@
       if (!animation) throw new Error(`动画文件中已找不到 ${id}，请重新导入并检查特效绑定。`);
       source.id = id;
       source.animation = clone(animation);
-      for (const effect of studio.effects.filter(candidate => candidate.animation === source.key)) {
-        normalizeParticleAliases(source.animation, effect);
-      }
     }
   }
   function exportTo(parent) {
+    if (!studio) throw new Error('请先导入工程文件夹');
+    for (const session of sessions.values()) if (session.studio === studio && ModelProject.all.includes(session.project)) {
+      if (session.project.animations.some(a => !a.saved)) throw new Error(`标签“${session.project.name}”有未保存的动画，请先保存再导出。`);
+    }
     refreshSavedAnimations();
     const result = exportPack(studio, parent);
     Blockbench.showMessageBox({title: 'VFX 导出完成', message: `${result.count} 个文件已写入：\n${result.target}\n\n在游戏执行 /vfx_client reload。${result.backup ? '\n旧包备份：' + result.backup : ''}`});
@@ -651,15 +808,16 @@
         computed: {
           current() { return this.p.effects.find(e => e.key === this.selected); },
           eventRows() { return events(this.p.animations.find(a => a.key === this.current?.animation)?.animation); },
-          aliases() { return [...new Set(this.eventRows.map(e => e.effect))]; }
         },
         methods: {
           save() { guard(saveWorkspace); }, check() { this.message = validate(studio).join('\n') || '检查通过：每个动画事件、定位器和贴图都有明确绑定。'; },
           help() { showHelp(); }, preview() { guard(() => preview(this.current)); }, capture() { guard(capture); this.$forceUpdate(); },
           exportClient() { guard(exportClient); }, exportFolder() { guard(() => { const dir = Blockbench.pickDirectory({title: '选择导出父目录（将创建包 ID 子目录）'}); if (dir) exportTo(dir); }); },
-          bind(alias, value) { this.$set(this.current.bindings, alias, value); },
-          add() { const effect = {key: `effect_${Date.now()}`, name: `effect_${this.p.effects.length + 1}`, enabled: true, model: '', texture: '', animation: '', duration: 120, bindings: {}}; this.p.effects.push(effect); this.selected = effect.key; },
-          openParticle(particle) { new Dialog({id: 'vfx_particle_json', title: particle.path, width: 800, form: {json: {type: 'textarea', label: 'Bedrock 粒子 JSON', value: JSON.stringify(particle.json, null, 2)}}, onConfirm(values) { guard(() => { const parsed = JSON.parse(values.json); if (!parsed.particle_effect?.description) throw new Error('缺少 particle_effect.description'); const source = fileAt(studio.root, particle.path); const backup = path.join(path.dirname(studio.root), `${path.basename(studio.root)}-edit-backups`, `${Date.now()}-${token(particle.path)}.json`); fs.mkdirSync(path.dirname(backup), {recursive: true}); fs.copyFileSync(source, backup); fs.writeFileSync(source, JSON.stringify(parsed, null, 2) + '\n'); particle.json = parsed; this.hide(); }); }}).show(); }
+          binding(event) { return eventParticle(this.p, this.current, event); },
+          bind(event, value) { this.$set(this.current.eventBindings, event.key, {alias: event.effect, particle: value}); },
+          modelChanged() { this.current.modelUnresolved = false; },
+          add() { const effect = makeEffect(this.p); this.p.effects.push(effect); this.selected = effect.key; },
+          openParticle(particle) { new Dialog({id: 'vfx_particle_json', title: particle.path, width: 800, form: {json: {type: 'textarea', label: 'Bedrock 粒子 JSON', value: JSON.stringify(particle.json, null, 2)}}, onConfirm(values) { guard(() => { const parsed = JSON.parse(values.json); if (!parsed.particle_effect?.description) throw new Error('缺少 particle_effect.description'); const source = fileAt(studio.root, particle.path); const backup = path.join(path.dirname(studio.root), `${path.basename(studio.root)}-edit-backups`, `${Date.now()}-${token(particle.path)}.json`); fs.mkdirSync(path.dirname(backup), {recursive: true}); fs.copyFileSync(source, backup); fs.writeFileSync(source, JSON.stringify(parsed, null, 2) + '\n'); particle.json = parsed; particle.id = parsed.particle_effect.description.identifier || ''; this.hide(); }); }}).show(); }
         },
         template: `<div class="vfx-studio">
           <p class="vfx-path">{{p.root}}</p>
@@ -670,11 +828,12 @@
           <div v-if="tab==='effects'" class="vfx-columns"><div class="vfx-list"><button @click="add">＋ 新建特效</button><div v-for="e in p.effects" :key="e.key"><input type="checkbox" v-model="e.enabled"><button @click="selected=e.key" :class="{selected:selected===e.key}">{{e.name}}</button></div><p v-if="!p.effects.length">当前工程还没有特效。点击“＋ 新建特效”，再选择模型、动画和粒子。</p></div>
             <div v-if="current" class="vfx-detail">
               <label>特效名<input v-model="current.name"></label><label>持续时间（tick；20 tick = 1 秒）<input type="number" min="1" max="72000" v-model.number="current.duration"></label>
-              <label>模型<select v-model="current.model"><option value="">无模型（仅粒子）</option v-for="m in p.models" :value="m.key">{{m.path}} · {{m.id}}</option></select></label>
+              <label>模型<select v-model="current.model" @change="modelChanged"><option value="">无模型（仅粒子）</option><option v-for="m in p.models" :value="m.key">{{m.path}} · {{m.id}}</option></select></label>
+              <p v-if="current.modelUnresolved">模型关系尚未确认。请选择模型，或点击<button @click="modelChanged">确认为仅粒子</button></p>
               <label v-if="current.model">模型贴图<select v-model="current.texture"><option value="">请选择</option><option v-for="t in p.textures" :value="t.key">{{t.path}}</option></select></label>
               <label>动画<select v-model="current.animation"><option value="">无动画（静态模型）</option><option v-for="a in p.animations" :value="a.key">{{a.id}} · {{a.path}}</option></select></label>
-              <p>动画事件别名 → 粒子文件（数字别名可保留；必须明确选择）</p>
-              <label v-for="alias in aliases" :key="alias">{{alias}}<select :value="current.bindings[alias] || ''" @change="bind(alias, $event.target.value)"><option value="">未绑定</option><option v-for="r in p.particles" :value="r.key">{{r.path}}</option></select></label>
+              <p>逐事件绑定粒子文件；同名事件也可选择不同粒子。导出时自动生成匹配的实体引用。</p>
+              <label v-for="event in eventRows" :key="event.key">{{event.time}} s · 事件 {{event.index + 1}} · {{event.effect}} · {{event.locator || '实体原点'}}<select :value="binding(event) || ''" @change="bind(event, $event.target.value)"><option value="">未绑定</option><option v-for="r in p.particles" :value="r.key">{{r.path}}</option></select></label>
               <table><tr><th>触发时间</th><th>事件别名</th><th>定位器</th></tr><tr v-for="r in eventRows"><td>{{r.time}} s</td><td>{{r.effect}}</td><td>{{r.locator || '实体原点'}}</td></tr></table>
               <button @click="preview">打开 / 更新 Blockbench 预览</button><p>空格播放。模型、贴图绘制、动画和定位器在主界面编辑；完成后点击“保存当前编辑回工程”。</p>
             </div></div>
@@ -691,15 +850,17 @@
     if (!root) return;
     if (studio) saveSettings(studio);
     studio = scan(root);
-    showStudio();
-    const firstEffect = studio.effects.find(effect => effect.enabled) || studio.effects[0];
-    if (firstEffect) {
-      // Match YSM's import flow: open the model project immediately, then
-      // load the selected animation and the complete particle library.
-      guard(() => preview(firstEffect, {allowIncomplete: true}));
-    } else {
-      Blockbench.showQuickMessage(`导入完成：${studio.assets.length} 个文件，但没有可预览的 effect`, 5000);
+    showModelPicker();
+    Blockbench.showQuickMessage(`导入完成：${studio.models.length} 个模型、${studio.animations.length} 个动画、${studio.particles.length} 个粒子。请选择要编辑的模型。`, 6000);
+  }
+  function rescan() {
+    if (!studio) throw new Error('请先导入工程文件夹');
+    saveSettings(studio);
+    Object.assign(studio, scan(studio.root));
+    for (const session of sessions.values()) if (session.studio === studio) {
+      session.effect = studio.effects.find(e => e.key === session.effect.key) || session.effect;
     }
+    showModelPicker();
   }
   // Blockbench creates a temporary Plugin instance under the selected file's
   // base name before evaluating a local plugin.  Registering the canonical ID
@@ -717,16 +878,28 @@
   const pluginId = registered.yesstevevfx_studio ? 'yesstevevfx_studio' : (loadingLocal || 'yesstevevfx_studio');
   pluginApi.register(pluginId, {
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
-    icon: 'auto_awesome', version: '0.1.0', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
+    icon: 'auto_awesome', version: '0.2.0', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}');
-      for (const [id, name, fn] of [['import', '导入工程文件夹', importProject], ['new_pack', '新建特效包', createPack], ['manage', '资产与绑定', showStudio], ['help', '使用说明', showHelp], ['capture', '保存当前编辑回工程', capture], ['export', '导出到客户端', exportClient]]) {
-        const action = new Action(`yesstevevfx_${id}`, {name, icon: 'auto_awesome', click: () => guard(fn)});
+      const codec = AnimationCodec.codecs.bedrock;
+      originalSaveAnimation = codec.saveAnimation;
+      saveAnimationHook = function(animation) {
+        const session = sessions.get(Project?.uuid);
+        if (!session) return originalSaveAnimation.call(this, animation);
+        studio = session.studio;
+        return guard(() => capture({animations: [animation], model: false, texture: false}));
+      };
+      codec.saveAnimation = saveAnimationHook;
+      for (const [id, name, fn] of [['import', '导入工程文件夹', importProject], ['new_pack', '新建特效包', createPack], ['models', '切换模型 / 打开其他模型', showModelPicker], ['rescan', '重新扫描资产', rescan], ['manage', '资产与绑定', showStudio], ['help', '使用说明', showHelp], ['capture', '保存当前编辑回工程', capture], ['export', '导出到客户端', exportClient]]) {
+        const action = new Action(`yesstevevfx_${id}`, {name, icon: 'auto_awesome', click: () => guard(() => { activeStudio(); return fn(); })});
         actions.push(action);
       }
       menu = new BarMenu('yesstevevfx', actions, {name: 'VFX'});
       MenuBar.update();
     },
-    onunload() { dialog?.hide(); menu?.delete(); actions.forEach(action => action.delete()); MenuBar.update(); style?.delete(); sessions.clear(); }
+    onunload() {
+      if (AnimationCodec.codecs.bedrock.saveAnimation === saveAnimationHook) AnimationCodec.codecs.bedrock.saveAnimation = originalSaveAnimation;
+      dialog?.delete(); picker?.delete(); menu?.delete(); actions.forEach(action => action.delete()); MenuBar.update(); style?.delete(); sessions.clear();
+    }
   });
 })();
