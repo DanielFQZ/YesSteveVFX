@@ -202,3 +202,19 @@ test('runtime-pack edit backups live outside the packs directory', () => {
   const root = path.join(os.tmpdir(), 'client', 'config', 'yesstevevfx', 'packs', 'test_effects');
   assert.equal(core.editBackupRoot(root), path.join(os.tmpdir(), 'client', 'config', 'yesstevevfx', 'vfx-edit-backups', 'test_effects'));
 });
+test('new pack creates editable geo and animation sources with a preview binding', t => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'vfx-new-pack-'));
+  t.after(() => fs.rmSync(parent, {recursive: true, force: true}));
+  const root = core.createEmptyPack(parent, {packId: 'demo_pack', displayName: '演示包', modelFile: '女漂.geo', animationFile: '攻击.animation.json'});
+  assert.ok(fs.existsSync(path.join(root, 'models/女漂.geo.json')));
+  assert.ok(fs.existsSync(path.join(root, 'animations/攻击.animation.json')));
+  assert.ok(!fs.existsSync(path.join(root, 'models/女漂.geo.geo.json')));
+  const project = core.scan(root);
+  assert.equal(project.models.length, 1);
+  assert.equal(project.models[0].id, 'geometry.demo_pack.model');
+  assert.equal(project.animations.length, 1);
+  assert.equal(project.animations[0].id, 'animation.demo_pack.main');
+  assert.equal(project.effects.length, 1);
+  assert.equal(project.effects[0].model, 'models/女漂.geo.json#0');
+  assert.equal(project.effects[0].animation, 'animations/攻击.animation.json#animation.demo_pack.main');
+});

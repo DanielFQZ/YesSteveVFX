@@ -384,6 +384,26 @@
     if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(packId)) {
       throw new Error('包 ID 必须是 1–64 位小写字母、数字、点、横线或下划线，并以字母/数字开头。中文可填写在显示名称中。');
     }
+    const sourceName = (value, category, fallback) => {
+      let name = path.basename(String(value || '').trim());
+      name = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim();
+      name = name.replace(/\.(?:geo|animation)(?:\.json)?$/i, '').replace(/\.json$/i, '').trim();
+      return `${name || fallback}.${category}.json`;
+    };
+    const modelFile = sourceName(options.modelFile, 'geo', 'model');
+    const animationFile = sourceName(options.animationFile, 'animation', 'animation');
+    const animationStem = path.basename(animationFile, '.animation.json');
+    const animationSuffix = animationStem.toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+    const animationName = `animation.${packId}.${/[a-z0-9]/.test(animationSuffix) ? animationSuffix : 'main'}`;
+    const geometryStem = path.basename(modelFile, '.geo.json').toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+    const geometrySuffix = /[a-z0-9]/.test(geometryStem) ? geometryStem : 'model';
+    const geometry = emptyGeometry();
+    geometry.description.identifier = `geometry.${packId}.${geometrySuffix}`;
+    const modelPath = `models/${modelFile}`;
+    const animationPath = `animations/${animationFile}`;
+    const previewEffect = {key: `effect_${packId}_preview`, name: `${packId}_preview`.slice(0, 96), enabled: true,
+      model: `${modelPath}#0`, modelUnresolved: false, texture: '', animation: `${animationPath}#${animationName}`,
+      duration: 20, bindings: {}, eventBindings: {}};
     const root = path.join(parent, packId);
     if (fs.existsSync(root)) throw new Error(`目标目录已存在：${root}`);
     fs.mkdirSync(root, {recursive: true});
@@ -393,8 +413,14 @@
     fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
       format_version: 1, pack_id: packId, display_name: displayName, effects: []
     }, null, 2) + '\n');
+    fs.mkdirSync(path.dirname(path.join(root, modelPath)), {recursive: true});
+    fs.mkdirSync(path.dirname(path.join(root, animationPath)), {recursive: true});
+    fs.writeFileSync(path.join(root, modelPath), JSON.stringify({format_version: '1.12.0', 'minecraft:geometry': [geometry]}, null, 2) + '\n');
+    fs.writeFileSync(path.join(root, animationPath), JSON.stringify({format_version: '1.8.0', animations: {
+      [animationName]: {animation_length: 1}
+    }}, null, 2) + '\n');
     fs.writeFileSync(path.join(root, 'vfx-project.json'), JSON.stringify({
-      version: 1, packId, displayName, effects: [], particleTextures: {}
+      version: 1, packId, displayName, effects: [previewEffect], particleTextures: {}
     }, null, 2) + '\n');
     return root;
   }
@@ -1145,6 +1171,8 @@
       form: {
         packId: {label: '包 ID（用于资源 ID，只允许英文/数字/._-）', type: 'text', value: 'new_pack'},
         displayName: {label: '显示名称（可使用中文）', type: 'text', value: '新特效包'},
+        modelFile: {label: '初始模型文件名（可填写 .geo 或 .geo.json，支持中文）', type: 'text', value: 'model'},
+        animationFile: {label: '初始动画文件名（可填写 .animation 或 .animation.json，支持中文）', type: 'text', value: 'animation'},
         open: {label: '创建后立即打开工程', type: 'checkbox', value: true}
       },
       onConfirm(values) {
@@ -1156,7 +1184,7 @@
             studio = scan(root);
             showStudio();
           }
-          Blockbench.showMessageBox({title: '特效包已创建', message: `已创建空特效包：\n${root}\n\n请在资产与绑定中添加特效、导入模型/动画/粒子后再导出。`});
+          Blockbench.showMessageBox({title: '特效包已创建', message: `已创建特效包：\n${root}\n\n已生成可直接打开的空模型和动画文件。文件名由你填写，插件自动规范为 .geo.json 和 .animation.json。`});
         });
       }
     }).show();
