@@ -284,6 +284,31 @@
     saveSettings(studio);
     Blockbench.showQuickMessage('VFX 工程绑定已保存');
   }
+  function loadParticlePreview(particle) {
+    const absolute = fileAt(studio.root, particle.path);
+    // Blockbench indexes emitters by file path, while the Bedrock identifier
+    // is what appears in an animation particle frame.  Give every preview
+    // emitter a stable, unique identifier so duplicate source identifiers do
+    // not overwrite each other in the particle picker.
+    const document = clone(particle.json);
+    document.particle_effect.description.identifier = `yesstevevfx:preview/${token(particle.path)}`;
+    const loaded = Animator.loadParticleEmitter(absolute, JSON.stringify(document));
+    if (!loaded) throw new Error(`Blockbench 无法加载粒子：${particle.path}`);
+    if (particle.texture) {
+      const texture = find(studio.textures, particle.texture, '粒子贴图');
+      loaded.config.preview_texture = fileAt(studio.root, texture.path);
+      loaded.config.updateTexture();
+    }
+    return loaded;
+  }
+  function loadParticleLibrary() {
+    let loaded = 0;
+    for (const particle of studio.particles) {
+      loadParticlePreview(particle);
+      loaded++;
+    }
+    return loaded;
+  }
   function showHelp() {
     Blockbench.showMessageBox({
       title: 'YesSteveVFX Studio · 使用说明', width: 760,
@@ -312,11 +337,9 @@
         const particle = studio.particles.find(p => p.key === effect.bindings[point.effect]);
         if (!particle) continue;
         const absolute = fileAt(studio.root, particle.path);
-        const loaded = Animator.loadParticleEmitter(absolute, JSON.stringify(particle.json));
-        if (!loaded) throw new Error(`Blockbench 无法加载粒子：${particle.path}`);
-        const texture = find(studio.textures, particle.texture, '粒子贴图');
-        loaded.config.preview_texture = fileAt(studio.root, texture.path);
-        loaded.config.updateTexture();
+        // The complete particle library is loaded before animation binding;
+        // reuse that entry so newly added timeline frames see the same file.
+        loadParticlePreview(particle);
         point.file = absolute;
       }
     }
@@ -353,8 +376,9 @@
       for (const animation of loaded) { session.animationObjects.set(animation.uuid, source.key); bindPreview(animation, effect); }
       loaded[0]?.select();
     }
+    const particleCount = loadParticleLibrary();
     dialog?.hide(); Modes.options.animate.select(); Timeline.setTime(0); Animator.preview();
-    Blockbench.showQuickMessage('已打开模型/粒子预览。空格播放；完成编辑后用 VFX → 保存当前编辑回工程。', 6000);
+    Blockbench.showQuickMessage(`已打开模型/动画预览，已注册 ${particleCount} 个粒子。空格播放；可直接在粒子时间轴添加它们。`, 6000);
   }
   function capture() {
     const session = sessions.get(Project?.uuid);
@@ -440,7 +464,16 @@
     dialog?.hide();
     dialog = new Dialog({id: 'yesstevevfx_studio', title: 'YesSteveVFX · 资产与绑定', width: 1060, singleButton: true,
       component: {
-        data: () => ({p: studio, selected: studio.effects[0]?.key || '', tab: 'effects', message: ''}),
+        // Dialog components are mounted as a Vue root instance by Blockbench.
+        // Use a data object here instead of a factory function: this matches
+        // Blockbench's own dialog components and prevents a blank dialog on
+        // older Vue builds bundled with Blockbench 5.x.
+        data: {p: studio, selected: studio.effects[0]?.key || '', tab: 'effects', message: ''},
+        errorCaptured(error) {
+          this.message = `界面渲染错误：${error.message || error}`;
+          console.error('[YesSteveVFX] dialog render error', error);
+          return false;
+        },
         computed: {
           current() { return this.p.effects.find(e => e.key === this.selected); },
           eventRows() { return events(this.p.animations.find(a => a.key === this.current?.animation)?.animation); },
