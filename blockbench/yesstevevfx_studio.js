@@ -187,6 +187,22 @@
     return project;
   }
   const stableAlias = key => 'vfx_' + hash(key);
+  function readableAssetStem(value, fallback = 'asset') {
+    let stem = path.posix.basename(slash(String(value || '')).split('#')[0]);
+    stem = stem.replace(/\.(?:geo|animation|particle)(?:\.json)?$/i, '').replace(/\.(?:png|json)$/i, '');
+    // Names produced by older YesSteveVFX versions ended with _<12 hex chars>.
+    // Do not carry that implementation detail into a newly exported package.
+    const legacyName = /_[0-9a-f]{12}$/i.test(stem);
+    stem = stem.replace(/(?:_[0-9a-f]{12}_*)+$/i, '');
+    // Also normalize names from the old per-effect exporter, such as
+    // model_<source>_geo_json_0_<hash>.geo.json.
+    if (legacyName) {
+      stem = stem.replace(/^model_(.+)_geo_json_\d+$/i, '$1');
+      stem = stem.replace(/_(?:particle_)?(?:png|json|jso)$/i, '');
+    }
+    stem = stem.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[-._]+|[-._]+$/g, '');
+    return (stem.match(/[A-Za-z0-9]/) ? stem : fallback).slice(0, 96).toLowerCase();
+  }
   function eventParticle(project, effect, event) {
     const bound = effect.eventBindings?.[event.key];
     // A moved/inserted keyframe must never inherit the old occupant's binding.
@@ -297,11 +313,36 @@
     const json = (name, content) => out.set(name, Buffer.from(JSON.stringify(content, null, 2) + '\n'));
     const pack = project.packId;
     const resourcePack = options.generated ? `vfx_generated/${pack}` : pack;
-    const textureId = key => `yesstevevfx:textures/${resourcePack}/${token(key)}`;
-    const particleId = key => `yesstevevfx:${resourcePack}/${token(key)}`;
+    const runtimeNames = new Map();
+    const runtimeUsed = new Map();
+    const reservedNames = new Map();
+    function runtimeName(kind, key, fallback) {
+      const identity = `${kind}:${key}`;
+      if (runtimeNames.has(identity)) return runtimeNames.get(identity);
+      const used = runtimeUsed.get(kind) || new Set();
+      const base = readableAssetStem(key, fallback);
+      let name = base;
+      for (let index = 2; used.has(name) || (name !== base && reservedNames.get(kind)?.has(name)); index++) name = `${base}_${index}`;
+      used.add(name); runtimeUsed.set(kind, used); runtimeNames.set(identity, name);
+      return name;
+    }
+    // Allocate in source-key order, independent of effect/list order. Reserve
+    // natural names (e.g. smoke_2) before adding suffixes to duplicate smoke.
+    function allocateNames(kind, keys, fallback) {
+      const sorted = [...new Set(keys)].sort();
+      reservedNames.set(kind, new Set(sorted.map(key => readableAssetStem(key, fallback))));
+      sorted.forEach(key => runtimeName(kind, key, fallback));
+    }
+    runtimeUsed.set('textures', new Set(['empty']));
+    allocateNames('models', project.models.map(m => m.key), 'model');
+    allocateNames('textures', project.textures.map(t => t.key), 'texture');
+    allocateNames('particles', project.particles.map(p => p.key), 'particle');
+    const textureId = key => `yesstevevfx:textures/${resourcePack}/${runtimeName('textures', key, 'texture')}`;
+    const particleId = key => `yesstevevfx:${resourcePack}/${runtimeName('particles', key, 'particle')}`;
     function putTexture(key) {
       const texture = find(project.textures, key, '贴图');
-      out.set(`assets/eyelib/textures/${resourcePack}/${token(key)}.png`, fs.readFileSync(fileAt(project.root, texture.path)));
+      const name = runtimeName('textures', key, 'texture');
+      out.set(`assets/eyelib/textures/${resourcePack}/${name}.png`, fs.readFileSync(fileAt(project.root, texture.path)));
       return textureId(key);
     }
     // A source geometry is shared by all effects that reference the same
@@ -315,7 +356,7 @@
       const existing = geometryResources.get(sourceKey);
       if (existing) return existing;
       const geometry = effect.model ? clone(find(project.models, effect.model, '模型').geometry) : emptyGeometry();
-      const stem = effect.model ? `model_${token(effect.model)}` : 'empty';
+      const stem = runtimeName('models', effect.model || '__empty__', effect.model ? 'model' : 'empty');
       const base = `${options.generated ? 'vfx_generated.' : ''}${pack}.${stem}`;
       geometry.description.identifier = `geometry.yesstevevfx.${base}`;
       const file = `assets/eyelib/models/${resourcePack}/${stem}.geo.json`;
@@ -329,7 +370,7 @@
       const sourceKey = effect.model || '__empty__';
       const existing = animationResources.get(sourceKey);
       if (existing) return existing;
-      const stem = effect.model ? `model_${token(effect.model)}` : 'empty';
+      const stem = runtimeName('models', effect.model || '__empty__', effect.model ? 'model' : 'empty');
       const resource = {file: `assets/eyelib/animations/${resourcePack}/${stem}.animation.json`, animations: {}};
       animationResources.set(sourceKey, resource);
       return resource;
@@ -352,12 +393,13 @@
         for (const event of events(animation)) {
           const particle = find(project.particles, eventParticle(project, effect, event), '粒子');
           const alias = stableAlias(particle.key);
+          const particleName = runtimeName('particles', particle.key, 'particle');
           setEventAlias(animation, event, alias);
           entity.particle_effects[alias] = particleId(particle.key);
           const doc = clone(particle.json);
           doc.particle_effect.description.identifier = particleId(particle.key);
           doc.particle_effect.description.basic_render_parameters.texture = putTexture(particle.texture);
-          json(`assets/eyelib/particles/${resourcePack}/${token(particle.key)}.json`, doc);
+          json(`assets/eyelib/particles/${resourcePack}/${particleName}.json`, doc);
         }
         const id = `animation.yesstevevfx.${base}`;
         const animations = animationResource(effect);
@@ -397,6 +439,12 @@
     for (const file of output.keys()) if (sources.has(file)) throw new Error('生成目录被当作源资产使用，请先调整源路径：' + file);
     output.set('vfx-project.json', Buffer.from(JSON.stringify(settings(project), null, 2) + '\n'));
     const all = new Map(filesIn(project.root).map(file => [file, fs.statSync(fileAt(project.root, file)).size]));
+    // Renaming generated resources must not leave old animation IDs loaded a
+    // second time. Only retire generated files owned by this pack, never sources.
+    const obsolete = [...all.keys()].filter(file => !sources.has(file) && !output.has(file) &&
+      ['models', 'animations', 'particles', 'textures', 'entity', 'render_controllers'].some(kind =>
+        file.startsWith(`assets/eyelib/${kind}/vfx_generated/${project.packId}/`)));
+    for (const file of obsolete) all.delete(file);
     for (const [file, bytes] of output) all.set(file, bytes.length);
     if (all.size > 4096 || [...all.values()].reduce((a, b) => a + b, 0) > 128 * 1024 * 1024) throw new Error('生成后特效包会超过资源大小限制');
     const changed = [...output].filter(([file, bytes]) => !fs.existsSync(fileAt(project.root, file)) || !fs.readFileSync(fileAt(project.root, file)).equals(bytes));
@@ -404,7 +452,7 @@
     changed.sort(([a], [b]) => Number(a === 'manifest.json') - Number(b === 'manifest.json'));
     const backup = path.join(editBackupRoot(project.root), `runtime-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`);
     const previous = new Map();
-    for (const [file] of changed) {
+    for (const file of [...changed.map(([file]) => file), ...obsolete]) {
       const dest = fileAt(project.root, file);
       previous.set(file, fs.existsSync(dest) ? fs.readFileSync(dest) : null);
       if (previous.get(file)) {
@@ -413,6 +461,9 @@
     }
     const written = [];
     try {
+      for (const file of obsolete) {
+        written.push(file); fs.unlinkSync(fileAt(project.root, file));
+      }
       for (const [file, bytes] of changed) {
         const dest = fileAt(project.root, file);
         fs.mkdirSync(path.dirname(dest), {recursive: true}); written.push(file); fs.writeFileSync(dest, bytes);
@@ -424,7 +475,8 @@
       }
       throw error;
     }
-    return {count: changed.length, effects: project.effects.filter(e => e.enabled).length, backup: changed.length ? backup : ''};
+    return {count: changed.length + obsolete.length, effects: project.effects.filter(e => e.enabled).length,
+      backup: changed.length || obsolete.length ? backup : ''};
   }
   function saveSettings(project) {
     const dest = path.join(project.root, 'vfx-project.json');
@@ -531,7 +583,7 @@
     };
     function cleanAssetName(name, extension) {
       const original = path.basename(name || 'asset');
-      const stem = path.basename(original, path.extname(original)).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || 'asset';
+      const stem = path.basename(original, path.extname(original)).replace(/_[0-9a-f]{12}$/i, '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim() || 'asset';
       return `${stem.slice(0, 120)}${extension}`;
     }
     function put(source, bytes, kind, extension, name, canonicalize = (_target, raw) => raw, allowEmpty = false) {
@@ -1432,7 +1484,7 @@
   const pluginId = registered.yesstevevfx_studio ? 'yesstevevfx_studio' : (loadingLocal || 'yesstevevfx_studio');
   pluginApi.register(pluginId, {
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
-    icon: 'auto_awesome', version: '0.2.3', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
+    icon: 'auto_awesome', version: '0.2.4', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);

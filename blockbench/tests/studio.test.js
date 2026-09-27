@@ -85,6 +85,84 @@ test('effects sharing one source geometry export one animation file with all ent
   assert.equal(animations.length, 1);
   assert.equal(Object.keys(JSON.parse(output.get(animations[0])).animations).length, project.effects.length);
 });
+test('runtime asset names stay readable and only suffix real collisions', t => {
+  const project = projectFixture(t);
+  const effect = project.effects[0];
+  effect.model = project.models[0].key;
+  effect.texture = project.textures[0].key;
+  effect.eventBindings = Object.fromEntries(core.events(project.animations[0].animation).map(event => [event.key, {alias: event.effect, particle: project.particles[0].key}]));
+  project.effects = [effect];
+  const output = core.build(project);
+  const modelFiles = [...output.keys()].filter(file => file.includes('/models/'));
+  const animationFiles = [...output.keys()].filter(file => file.includes('/animations/'));
+  assert.equal(modelFiles.length, 1);
+  assert.equal(animationFiles.length, 1);
+  assert.ok(!modelFiles[0].match(/[0-9a-f]{12}/i));
+  assert.ok(!animationFiles[0].match(/[0-9a-f]{12}/i));
+});
+test('export resolves case, duplicate basenames, Chinese names and reserved empty texture without broken references', t => {
+  const project = projectFixture(t);
+  const bytes = fs.readFileSync(path.join(project.root, project.textures[0].path));
+  project.textures = ['a/Spark.png', 'b/spark.png', 'c/spark_2.png', 'empty.png', '中文.png'].map(key => {
+    const dest = path.join(project.root, key); fs.mkdirSync(path.dirname(dest), {recursive: true}); fs.writeFileSync(dest, bytes);
+    return {key, path: key};
+  });
+  project.models = ['a/Test_Model.geo.json#0', 'b/test_model.geo.json#0', 'c/test_model_2.geo.json#0', '模型.geo.json#0'].map((key, index) => {
+    const model = structuredClone(project.models[0]); model.key = key; model.path = key.split('#')[0];
+    model.geometry.bones[0].pivot[0] = index;
+    return model;
+  });
+  project.effects = project.textures.map((texture, index) => ({...core.makeEffect(project, null, project.models[index % 4].key), name: `effect_${index}`, texture: texture.key}));
+  const particleEffect = {...core.makeEffect(project, project.animations[0]), name: 'particle_only'};
+  particleEffect.eventBindings = Object.fromEntries(core.events(project.animations[0].animation).map((event, index) => [event.key, {alias: event.effect, particle: project.particles[index].key}]));
+  project.particles.forEach(p => p.texture = project.textures[0].key);
+  project.effects.push(particleEffect);
+  const out = core.build(project), prefix = `assets/eyelib/`;
+  for (const name of ['test_model', 'test_model_2', 'test_model_3', 'model']) {
+    assert.ok(out.has(`${prefix}models/${project.packId}/${name}.geo.json`));
+  }
+  for (const name of ['spark', 'spark_2', 'spark_3', 'empty_2', 'texture', 'empty']) {
+    assert.ok(out.has(`${prefix}textures/${project.packId}/${name}.png`), name);
+  }
+  assert.ok(out.has(`${prefix}particles/${project.packId}/12.json`));
+  assert.ok(out.has(`${prefix}particles/${project.packId}/12_2.json`));
+  for (const [file, data] of out) if (file.includes('/entity/')) {
+    const entity = JSON.parse(data)['minecraft:client_entity'].description;
+    assert.ok(out.has(prefix + entity.textures.default.split(':')[1] + '.png'));
+    for (const id of Object.values(entity.particle_effects)) {
+      const particle = JSON.parse(out.get(`${prefix}particles/${id.split(':')[1]}.json`)).particle_effect;
+      assert.equal(particle.description.identifier, id);
+      assert.ok(out.has(prefix + particle.description.basic_render_parameters.texture.split(':')[1] + '.png'));
+    }
+  }
+  project.effects.reverse(); project.models.reverse(); project.textures.reverse(); project.particles.reverse();
+  const resources = output => [...output].filter(([file]) => file !== 'manifest.json').sort();
+  assert.deepEqual(resources(core.build(project)), resources(out), 'list order does not change resource allocation');
+});
+test('exporting an imported runtime package retains readable names across repeated exports', t => {
+  const project = projectFixture(t);
+  const effect = project.effects[0]; project.effects = [effect];
+  effect.model = project.models[0].key; effect.texture = project.textures[0].key;
+  effect.eventBindings = Object.fromEntries(core.events(project.animations[0].animation).map((event, index) => [event.key, {alias: event.effect, particle: project.particles[index].key}]));
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'vfx-readable-export-'));
+  t.after(() => fs.rmSync(dest, {recursive: true, force: true}));
+  const expected = [...core.build(project).keys()].sort();
+  let current = project;
+  for (let iteration = 0; iteration < 3; iteration++) {
+    const result = core.exportPack(current, path.join(dest, String(iteration), 'packs'));
+    current = core.scan(result.target);
+    assert.deepEqual(core.validate(current), []);
+    assert.deepEqual([...core.build(current).keys()].sort(), expected);
+    assert.equal(current.models.length, 1);
+  }
+});
+test('external asset sync removes legacy hash suffixes from filenames', t => {
+  const project = projectFixture(t), external = projectFixture(t);
+  const source = path.join(external.root, 'particles', 'slash_abcdef123456.json');
+  fs.copyFileSync(path.join(external.root, 'particles/12.json'), source);
+  const plan = core.planAssetSync(project, {particles: [{source}]});
+  assert.equal(plan.particles[0].target, 'assets/eyelib/particles/slash.json');
+});
 test('saving native particle files resolves same-name events and rejects outside files', t => {
   const project = projectFixture(t);
   const compiled = structuredClone(project.animations[0].animation);
@@ -235,6 +313,23 @@ test('publishing in place completes the runtime graph without changing editable 
 test('runtime-pack edit backups live outside the packs directory', () => {
   const root = path.join(os.tmpdir(), 'client', 'config', 'yesstevevfx', 'packs', 'test_effects');
   assert.equal(core.editBackupRoot(root), path.join(os.tmpdir(), 'client', 'config', 'yesstevevfx', 'vfx-edit-backups', 'test_effects'));
+});
+test('publishing retires obsolete generated names with backups but preserves editable sources', t => {
+  const project = projectFixture(t);
+  const effect = project.effects[1]; project.effects = [effect];
+  effect.model = project.models[0].key; effect.texture = project.textures[0].key;
+  const backupRoot = core.editBackupRoot(project.root);
+  t.after(() => fs.rmSync(backupRoot, {recursive: true, force: true}));
+  const old = `assets/eyelib/animations/vfx_generated/${project.packId}/old_abcdef123456.animation.json`;
+  const oldBytes = Buffer.from('{"animations":{}}');
+  fs.mkdirSync(path.dirname(path.join(project.root, old)), {recursive: true});
+  fs.writeFileSync(path.join(project.root, old), oldBytes);
+  const source = project.animations[1].path, before = fs.readFileSync(path.join(project.root, source));
+  const result = core.publishRuntime(project);
+  assert.equal(fs.existsSync(path.join(project.root, old)), false);
+  assert.deepEqual(fs.readFileSync(path.join(result.backup, old)), oldBytes);
+  assert.deepEqual(fs.readFileSync(path.join(project.root, source)), before);
+  assert.equal(core.publishRuntime(project).count, 0);
 });
 test('recent workflow paths survive lookup and fall back when a folder is removed', t => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'vfx-recent-'));
