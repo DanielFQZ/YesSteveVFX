@@ -10,6 +10,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mojang.serialization.JsonOps;
 import io.github.tt432.eyelib.animation.AnimationComponent;
+import io.github.tt432.eyelib.animation.Animation;
 import io.github.tt432.eyelib.animation.AnimationRegistries;
 import io.github.tt432.eyelib.animation.bedrock.BrAnimation;
 import io.github.tt432.eyelib.animation.bedrock.controller.BrAnimationControllers;
@@ -42,6 +43,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -73,40 +75,51 @@ public final class EyelibBackend implements EffectBackend {
     private final Set<String> ownedControllerIds = new HashSet<>();
     private final Set<String> ownedParticleIds = new HashSet<>();
     private final Set<String> ownedTextureIds = new HashSet<>();
+    private Map<String, byte[]> ownedTextureBytes = Map.of();
     private Map<String, EffectAssetBundle> loadedBundles = Map.of();
 
     @Override
     public void reload(Map<String, EffectAssetBundle> bundles) throws Exception {
         Objects.requireNonNull(bundles, "bundles");
         Publication publication = parse(bundles);
+        BackendSnapshot previous = snapshot();
 
-        // Publish only after every JSON file in every bundle has parsed successfully.
-        clear();
-        removeOwnedResources();
-        ModelManager.INSTANCE.putAll(publication.models);
-        ClientEntityManager.INSTANCE.putAll(publication.entities);
-        RenderControllerManager.INSTANCE.putAll(publication.renderControllers);
-        // 21.1.14 has one global staging slot. Publishing individual entries
-        // preserves eyelib's loaded assets and other mods' animation sources.
-        publication.animations.values().forEach(AnimationAssetRegistry::publishAnimation);
-        publication.controllers.values().forEach(AnimationAssetRegistry::publishAnimationController);
-        publication.particles.values().forEach(ParticleDefinitionRegistry.publisher()::publishParticle);
-        publication.textures.forEach((id, bytes) -> {
-            try {
-                NativeImagePort.loadAndUpload(id, new ByteArrayInputStream(bytes));
-            } catch (Exception e) {
-                throw new PublicationException("Cannot upload texture " + id, e);
-            }
-        });
+        try {
+            // Publish only after every JSON file in every bundle has parsed
+            // successfully. If a registry or texture rejects publication,
+            // restore the complete previous snapshot before propagating the
+            // error so /vfx_client reload is genuinely transactional.
+            clear();
+            removeOwnedResources();
+            ModelManager.INSTANCE.putAll(publication.models);
+            ClientEntityManager.INSTANCE.putAll(publication.entities);
+            RenderControllerManager.INSTANCE.putAll(publication.renderControllers);
+            // 21.1.14 has one global staging slot. Publishing individual entries
+            // preserves eyelib's loaded assets and other mods' animation sources.
+            publication.animations.values().forEach(AnimationAssetRegistry::publishAnimation);
+            publication.controllers.values().forEach(AnimationAssetRegistry::publishAnimationController);
+            publication.particles.values().forEach(ParticleDefinitionRegistry.publisher()::publishParticle);
+            publication.textures.forEach((id, bytes) -> {
+                try {
+                    NativeImagePort.loadAndUpload(id, new ByteArrayInputStream(bytes));
+                } catch (Exception e) {
+                    throw new PublicationException("Cannot upload texture " + id, e);
+                }
+            });
 
-        ownedModelIds.addAll(publication.models.keySet());
-        ownedEntityIds.addAll(publication.entities.keySet());
-        ownedRenderControllerIds.addAll(publication.renderControllers.keySet());
-        publication.animations.values().forEach(value -> ownedAnimationIds.addAll(value.animations().keySet()));
-        publication.controllers.values().forEach(value -> ownedControllerIds.addAll(value.animationControllers().keySet()));
-        ownedParticleIds.addAll(publication.particles.keySet());
-        ownedTextureIds.addAll(publication.textures.keySet());
-        loadedBundles = Map.copyOf(bundles);
+            ownedModelIds.addAll(publication.models.keySet());
+            ownedEntityIds.addAll(publication.entities.keySet());
+            ownedRenderControllerIds.addAll(publication.renderControllers.keySet());
+            publication.animations.values().forEach(value -> ownedAnimationIds.addAll(value.animations().keySet()));
+            publication.controllers.values().forEach(value -> ownedControllerIds.addAll(value.animationControllers().keySet()));
+            ownedParticleIds.addAll(publication.particles.keySet());
+            ownedTextureIds.addAll(publication.textures.keySet());
+            ownedTextureBytes = copyBytes(publication.textures);
+            loadedBundles = Map.copyOf(bundles);
+        } catch (Exception | LinkageError failure) {
+            rollback(previous, publication);
+            throw failure;
+        }
     }
 
     @Override
@@ -129,7 +142,8 @@ public final class EyelibBackend implements EffectBackend {
         try {
             RenderData<?> data = RenderData.getComponent(carrier);
             data.ensureOwner(carrier);
-            BrClientEntity clientEntity = parseClientEntity(bundle);
+            BrClientEntity clientEntity = parseClientEntity(bundle,
+                    bundle.read(bundle.definition().clientEntity()));
             EntityRenderOrchestrator.setupClientEntity(clientEntity, data).forEach(Runnable::run);
         } catch (Exception | LinkageError exception) {
             carrierFactory.remove(carrier);
@@ -248,6 +262,63 @@ public final class EyelibBackend implements EffectBackend {
         ownedControllerIds.clear();
         ownedParticleIds.clear();
         ownedTextureIds.clear();
+        ownedTextureBytes = Map.of();
+    }
+
+    private BackendSnapshot snapshot() {
+        return new BackendSnapshot(
+                new LinkedHashMap<>(ModelManager.INSTANCE.all()),
+                new LinkedHashMap<>(ClientEntityManager.INSTANCE.all()),
+                new LinkedHashMap<>(RenderControllerManager.INSTANCE.all()),
+                new LinkedHashMap<>(AnimationRegistries.animation().all()),
+                new LinkedHashMap<>(ParticleDefinitionRegistry.store().all()),
+                new HashSet<>(ownedModelIds), new HashSet<>(ownedEntityIds),
+                new HashSet<>(ownedRenderControllerIds), new HashSet<>(ownedAnimationIds),
+                new HashSet<>(ownedControllerIds), new HashSet<>(ownedParticleIds),
+                new HashSet<>(ownedTextureIds), copyBytes(ownedTextureBytes), loadedBundles);
+    }
+
+    private void rollback(BackendSnapshot previous, Publication publication) {
+        try {
+            // A failed publication may have partially inserted entries. Restore
+            // each repository snapshot as one operation before restoring our
+            // ownership bookkeeping.
+            ModelManager.INSTANCE.replaceAll(previous.models);
+            ClientEntityManager.INSTANCE.replaceAll(previous.entities);
+            RenderControllerManager.INSTANCE.replaceAll(previous.renderControllers);
+            AnimationRegistries.animation().replaceAll(previous.animations);
+            ParticleDefinitionRegistry.store().replaceAll(previous.particles);
+
+            Set<String> texturesToRelease = new HashSet<>(publication.textures.keySet());
+            texturesToRelease.addAll(previous.ownedTextureIds);
+            texturesToRelease.forEach(id -> Minecraft.getInstance().getTextureManager().release(
+                    ResourceLocation.tryParse(id)));
+            previous.textureBytes.forEach((id, bytes) -> {
+                try {
+                    NativeImagePort.loadAndUpload(id, new ByteArrayInputStream(bytes));
+                } catch (Exception e) {
+                    LOGGER.warn("Could not restore VFX texture {} after failed reload", id, e);
+                }
+            });
+
+            ownedModelIds.clear(); ownedModelIds.addAll(previous.ownedModelIds);
+            ownedEntityIds.clear(); ownedEntityIds.addAll(previous.ownedEntityIds);
+            ownedRenderControllerIds.clear(); ownedRenderControllerIds.addAll(previous.ownedRenderControllerIds);
+            ownedAnimationIds.clear(); ownedAnimationIds.addAll(previous.ownedAnimationIds);
+            ownedControllerIds.clear(); ownedControllerIds.addAll(previous.ownedControllerIds);
+            ownedParticleIds.clear(); ownedParticleIds.addAll(previous.ownedParticleIds);
+            ownedTextureIds.clear(); ownedTextureIds.addAll(previous.ownedTextureIds);
+            ownedTextureBytes = copyBytes(previous.textureBytes);
+            loadedBundles = previous.loadedBundles;
+        } catch (RuntimeException | LinkageError rollbackFailure) {
+            LOGGER.error("Could not restore the previous YesSteveVFX resource snapshot", rollbackFailure);
+        }
+    }
+
+    private static Map<String, byte[]> copyBytes(Map<String, byte[]> source) {
+        Map<String, byte[]> copy = new LinkedHashMap<>();
+        source.forEach((id, bytes) -> copy.put(id, bytes.clone()));
+        return Map.copyOf(copy);
     }
 
     private static <T> void removeOwned(Repository<T> registry, Set<String> owned) {
@@ -259,9 +330,20 @@ public final class EyelibBackend implements EffectBackend {
 
     private Publication parse(Map<String, EffectAssetBundle> bundles) throws Exception {
         Publication result = new Publication();
+        Map<String, String> modelOwners = new HashMap<>();
+        Map<String, String> entityOwners = new HashMap<>();
+        Map<String, String> animationOwners = new HashMap<>();
+        Map<String, String> animationIdOwners = new HashMap<>();
+        Map<String, String> controllerOwners = new HashMap<>();
+        Map<String, String> controllerIdOwners = new HashMap<>();
+        Map<String, String> renderControllerOwners = new HashMap<>();
+        Map<String, String> particleOwners = new HashMap<>();
+        Map<String, String> textureOwners = new HashMap<>();
         for (EffectAssetBundle bundle : bundles.values()) {
-            BrClientEntity entity = parseClientEntity(bundle);
-            result.entities.put(entity.identifier(), entity);
+            byte[] entityBytes = bundle.read(bundle.definition().clientEntity());
+            BrClientEntity entity = parseClientEntity(bundle, entityBytes);
+            registerUnique(result.entities, entityOwners, entity.identifier(), entity,
+                    digest(entityBytes), "client entity");
 
             for (Map.Entry<String, byte[]> file : bundle.files().entrySet()) {
                 String path = file.getKey();
@@ -270,27 +352,36 @@ public final class EyelibBackend implements EffectBackend {
                     json = parseJson(path, file.getValue());
                     validateBedrockTextureBounds(json, path);
                     Map<String, Model> models = BedrockGeometryImporter.importJson(json.getAsJsonObject());
-                    result.models.putAll(models);
+                    String digest = digest(file.getValue());
+                    models.forEach((id, model) -> registerUnique(result.models, modelOwners, id, model,
+                            digest, "geometry"));
                     requireNamespace(models.keySet(), "geometry");
                 } else if (path.startsWith("assets/eyelib/animations/") && path.endsWith(".json")) {
                     json = parseJson(path, file.getValue());
                     BrAnimationSet set = BrAnimationSet.CODEC.parse(JsonOps.INSTANCE, json).result()
                             .orElseThrow(() -> new IllegalArgumentException("Invalid animation: " + path));
                     BrAnimation animation = BrAnimation.fromSchemaSet(set);
-                    result.animations.put(path, animation);
+                    String digest = digest(file.getValue());
+                    registerUnique(result.animations, animationOwners, path, animation, digest, "animation file");
+                    animation.animations().keySet().forEach(id -> registerId(animationIdOwners, id, digest, "animation"));
                     requireNamespace(animation.animations().keySet(), "animation");
                 } else if (path.startsWith("assets/eyelib/animation_controllers/") && path.endsWith(".json")) {
                     json = parseJson(path, file.getValue());
                     BrAnimationControllerSet set = BrAnimationControllerSet.CODEC.parse(JsonOps.INSTANCE, json).result()
                             .orElseThrow(() -> new IllegalArgumentException("Invalid animation controller: " + path));
                     BrAnimationControllers controllers = BrAnimationControllers.fromSchemaSet(set);
-                    result.controllers.put(path, controllers);
+                    String digest = digest(file.getValue());
+                    registerUnique(result.controllers, controllerOwners, path, controllers, digest, "controller file");
+                    controllers.animationControllers().keySet().forEach(id -> registerId(
+                            controllerIdOwners, id, digest, "animation controller"));
                     requireNamespace(controllers.animationControllers().keySet(), "controller.animation");
                 } else if (path.startsWith("assets/eyelib/render_controllers/") && path.endsWith(".json")) {
                     json = parseJson(path, file.getValue());
                     RenderControllers controllers = RenderControllers.CODEC.parse(JsonOps.INSTANCE, json).result()
                             .orElseThrow(() -> new IllegalArgumentException("Invalid render controller: " + path));
-                    result.renderControllers.putAll(controllers.render_controllers());
+                    String digest = digest(file.getValue());
+                    controllers.render_controllers().forEach((id, value) -> registerUnique(
+                            result.renderControllers, renderControllerOwners, id, value, digest, "render controller"));
                     requireNamespace(controllers.render_controllers().keySet(), "controller.render");
                 } else if (path.startsWith("assets/eyelib/particles/") && path.endsWith(".json")) {
                     json = parseJson(path, file.getValue());
@@ -301,7 +392,8 @@ public final class EyelibBackend implements EffectBackend {
                     }
                     ParticleDefinition definition = ParticleDefinitionAdapter.fromSchema(particle).result()
                             .orElseThrow(() -> new IllegalArgumentException("Invalid particle components: " + path));
-                    result.particles.put(definition.identifier(), definition);
+                    registerUnique(result.particles, particleOwners, definition.identifier(), definition,
+                            digest(file.getValue()), "particle");
                 } else if (path.startsWith("assets/eyelib/textures/") && path.endsWith(".png")) {
                     // Bedrock entity textures normally omit .png, while the
                     // eyelib particle renderer appends .png before asking
@@ -309,18 +401,21 @@ public final class EyelibBackend implements EffectBackend {
                     // one uploaded asset works for model and particle paths.
                     String relative = path.substring("assets/eyelib/".length(), path.length() - ".png".length());
                     byte[] bytes = file.getValue().clone();
-                    result.textures.put(NAMESPACE + ":" + relative, bytes.clone());
-                    result.textures.put(NAMESPACE + ":" + relative + ".png", bytes);
+                    registerUnique(result.textures, textureOwners, NAMESPACE + ":" + relative, bytes.clone(),
+                            digest(bytes), "texture");
+                    registerUnique(result.textures, textureOwners, NAMESPACE + ":" + relative + ".png", bytes,
+                            digest(bytes), "texture");
                 } else if (path.startsWith("assets/eyelib/particles/") && path.endsWith(".png")) {
                     // Older editor exports placed particle sprite PNGs beside
                     // the particle JSON. Keep those packs loadable while the
                     // editor writes new images to assets/eyelib/textures/.
                     String relative = path.substring("assets/eyelib/particles/".length(), path.length() - ".png".length());
                     byte[] bytes = file.getValue().clone();
-                    result.textures.put(NAMESPACE + ":particles/" + relative, bytes.clone());
-                    result.textures.put(NAMESPACE + ":particles/" + relative + ".png", bytes.clone());
-                    result.textures.put(NAMESPACE + ":textures/" + relative, bytes.clone());
-                    result.textures.put(NAMESPACE + ":textures/" + relative + ".png", bytes);
+                    String digest = digest(bytes);
+                    registerUnique(result.textures, textureOwners, NAMESPACE + ":particles/" + relative, bytes.clone(), digest, "texture");
+                    registerUnique(result.textures, textureOwners, NAMESPACE + ":particles/" + relative + ".png", bytes.clone(), digest, "texture");
+                    registerUnique(result.textures, textureOwners, NAMESPACE + ":textures/" + relative, bytes.clone(), digest, "texture");
+                    registerUnique(result.textures, textureOwners, NAMESPACE + ":textures/" + relative + ".png", bytes, digest, "texture");
                 }
             }
         }
@@ -403,8 +498,7 @@ public final class EyelibBackend implements EffectBackend {
         return value.getAsDouble();
     }
 
-    private static BrClientEntity parseClientEntity(EffectAssetBundle bundle) throws Exception {
-        byte[] bytes = bundle.read(bundle.definition().clientEntity());
+    private static BrClientEntity parseClientEntity(EffectAssetBundle bundle, byte[] bytes) throws Exception {
         JsonElement json = parseJson(bundle.definition().clientEntity(), bytes);
         BrClientEntity entity = BrClientEntity.CODEC.parse(JsonOps.INSTANCE, json).result()
                 .orElseThrow(() -> new IllegalArgumentException("Invalid client entity: " + bundle.definition().clientEntity()));
@@ -443,6 +537,36 @@ public final class EyelibBackend implements EffectBackend {
         }
     }
 
+    private static <T> void registerUnique(Map<String, T> target, Map<String, String> owners,
+                                           String id, T value, String digest, String kind) {
+        String previous = owners.putIfAbsent(id, digest);
+        if (previous != null) {
+            if (!previous.equals(digest)) {
+                throw new IllegalArgumentException("Conflicting " + kind + " id in VFX namespace: " + id);
+            }
+            return;
+        }
+        target.put(id, value);
+    }
+
+    private static void registerId(Map<String, String> owners, String id, String digest, String kind) {
+        String previous = owners.putIfAbsent(id, digest);
+        if (previous != null && !previous.equals(digest)) {
+            throw new IllegalArgumentException("Conflicting " + kind + " id in VFX namespace: " + id);
+        }
+    }
+
+    private static String digest(byte[] bytes) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(bytes);
+            StringBuilder value = new StringBuilder(hash.length * 2);
+            for (byte part : hash) value.append(String.format("%02x", part));
+            return value.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException("Cannot hash VFX resource", e);
+        }
+    }
+
     private static final class Publication {
         final Map<String, Model> models = new LinkedHashMap<>();
         final Map<String, BrClientEntity> entities = new LinkedHashMap<>();
@@ -451,6 +575,19 @@ public final class EyelibBackend implements EffectBackend {
         final Map<String, io.github.tt432.eyelib.client.render.controller.RenderControllerEntry> renderControllers = new LinkedHashMap<>();
         final Map<String, ParticleDefinition> particles = new LinkedHashMap<>();
         final Map<String, byte[]> textures = new LinkedHashMap<>();
+    }
+
+    private record BackendSnapshot(
+            Map<String, Model> models,
+            Map<String, BrClientEntity> entities,
+            Map<String, io.github.tt432.eyelib.client.render.controller.RenderControllerEntry> renderControllers,
+            Map<String, Animation> animations,
+            Map<String, ParticleDefinition> particles,
+            Set<String> ownedModelIds, Set<String> ownedEntityIds,
+            Set<String> ownedRenderControllerIds, Set<String> ownedAnimationIds,
+            Set<String> ownedControllerIds, Set<String> ownedParticleIds,
+            Set<String> ownedTextureIds, Map<String, byte[]> textureBytes,
+            Map<String, EffectAssetBundle> loadedBundles) {
     }
 
     private static final class Instance implements EffectHandle {

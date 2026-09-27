@@ -91,6 +91,20 @@ class LocalVfxAssetSourceTest {
         assertDoesNotThrow(() -> LocalVfxAssetSource.validateRelativePath("assets/eyelib/entity/a.json"));
     }
 
+    @Test
+    void effectIdsRejectAmbiguousPathSegments() {
+        assertDoesNotThrow(() -> new EffectDefinition("yesstevevfx:slash/air", 20,
+                "assets/eyelib/entity/a.json"));
+        assertThrows(IllegalArgumentException.class, () -> new EffectDefinition(
+                "yesstevevfx:/slash", 20, "assets/eyelib/entity/a.json"));
+        assertThrows(IllegalArgumentException.class, () -> new EffectDefinition(
+                "yesstevevfx:slash//air", 20, "assets/eyelib/entity/a.json"));
+        assertThrows(IllegalArgumentException.class, () -> new EffectDefinition(
+                "yesstevevfx:slash/../air", 20, "assets/eyelib/entity/a.json"));
+        assertThrows(IllegalArgumentException.class, () -> new EffectDefinition(
+                "YesSteveVFX:slash", 20, "assets/eyelib/entity/a.json"));
+    }
+
     private static void writePack(Path packs, String pack, String id, String clientEntity) throws IOException {
         Path root = packs.resolve(pack);
         Files.createDirectories(root.resolve("effects/" + id.substring(id.indexOf(':') + 1)));

@@ -2,7 +2,7 @@
 
 YesSteveVFX 是面向 Forge 1.20.1 的客户端特效运行时。一个 effect 由 Bedrock 模型、动画、render controller、纹理和粒子资源组成；YesSteveVFX 管理配置、实例生命周期和 carrier，eyelib 负责实际的 Bedrock 模型、动画和粒子渲染，YSM 只负责通过 Molang 指令帧控制播放。当前构件支持 Forge 1.20.1 的 47.0.0 至 47.x 版本。
 
-当前仓库包含一个可用于联调的测试版本实现。它以关闭 Oculus 光影作为基础验收环境，需要 Forge 1.20.1、eyelib；要使用 YSM 动画控制时还需要安装 YSM。
+当前仓库包含 `1.0.0-pre.1` 预发布实现。它以关闭 Oculus 光影作为基础验收环境，需要 Forge 1.20.1、eyelib；要使用 YSM 动画控制时还需要安装 YSM。
 
 运行时关系如下：
 

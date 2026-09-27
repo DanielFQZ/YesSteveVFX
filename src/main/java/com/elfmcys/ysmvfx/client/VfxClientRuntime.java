@@ -49,6 +49,7 @@ public final class VfxClientRuntime {
 
     /** Publishes one complete asset snapshot, allowing a future YSM container source. */
     public static void reload(VfxAssetSource source) {
+        boolean wasLoaded = loaded;
         try {
             Map<String, EffectAssetBundle> next = source.load();
             backend.reload(next);
@@ -56,9 +57,17 @@ public final class VfxClientRuntime {
             bundles = next;
             loaded = true;
             LOGGER.info("Loaded {} YesSteveVFX effect definition(s)", next.size());
-        } catch (Exception exception) {
-            loaded = false;
-            LOGGER.error("Could not load YesSteveVFX assets; previous generation remains active", exception);
+        } catch (Exception | LinkageError exception) {
+            // Backends are required to publish atomically. Keep the previous
+            // snapshot and its command visibility when a new source or backend
+            // rejects a reload; this also makes a typo in one pack recoverable
+            // with a later reload without discarding the loaded asset snapshot.
+            // A backend may have had to tear down live instances while rolling
+            // back global registries, so discard their handles rather than
+            // leaving stale entries in the action and lifetime maps.
+            stopAll();
+            loaded = wasLoaded;
+            LOGGER.error("Could not load YesSteveVFX assets; previous asset generation remains loaded, active effects were stopped", exception);
         }
     }
 
