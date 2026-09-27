@@ -41,7 +41,8 @@ test('duplicate numeric aliases and particle identifiers export distinct correct
   const read = file => JSON.parse(output.get(file));
   const definition = read(`effects/${effect.name}.json`);
   const entity = read(definition.client_entity)['minecraft:client_entity'].description;
-  const animation = read(`assets/eyelib/animations/${project.packId}/${effect.name}.animation.json`).animations[entity.animations.main];
+  const animationFile = [...output.keys()].find(file => file.startsWith(`assets/eyelib/animations/${project.packId}/`));
+  const animation = read(animationFile).animations[entity.animations.main];
   const events = core.events(animation);
   assert.notEqual(events[0].effect, events[1].effect);
   assert.equal(new Set(events.map(e => entity.particle_effects[e.effect])).size, 2);
@@ -69,6 +70,20 @@ test('effects sharing one source geometry export one editable runtime geo', t =>
   const secondEntity = JSON.parse(output.get('assets/eyelib/entity/' + project.packId + '/second.json'));
   assert.equal(firstEntity['minecraft:client_entity'].description.geometry.default,
     secondEntity['minecraft:client_entity'].description.geometry.default);
+});
+test('effects sharing one source geometry export one animation file with all entries', t => {
+  const project = projectFixture(t);
+  const source = project.models[0].key;
+  const texture = project.textures[0].key;
+  project.effects = project.animations.map((animation, index) => {
+    const effect = {...core.makeEffect(project, animation, source), name: `effect_${index + 1}`, texture};
+    effect.eventBindings = Object.fromEntries(core.events(animation.animation).map(event => [event.key, {alias: event.effect, particle: project.particles[0].key}]));
+    return effect;
+  });
+  const output = core.build(project);
+  const animations = [...output.keys()].filter(file => file.startsWith(`assets/eyelib/animations/${project.packId}/`));
+  assert.equal(animations.length, 1);
+  assert.equal(Object.keys(JSON.parse(output.get(animations[0])).animations).length, project.effects.length);
 });
 test('saving native particle files resolves same-name events and rejects outside files', t => {
   const project = projectFixture(t);

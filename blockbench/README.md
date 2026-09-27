@@ -1,6 +1,6 @@
 # YesSteveVFX Studio（Blockbench 插件）
 
-桌面版 Blockbench 插件，用于管理一个特效包里的模型、动画、粒子与贴图，编辑源文件，并生成 YesSteveVFX 使用的运行时包。当前插件版本：**0.2.2**。无需修改 Blockbench、YSM 或 eyelib。
+桌面版 Blockbench 插件，用于管理一个特效包里的模型、动画、粒子与贴图，编辑源文件，并生成 YesSteveVFX 使用的运行时包。当前插件版本：**0.2.3**。无需修改 Blockbench、YSM 或 eyelib。
 
 ## 安装 / 更新
 
@@ -19,7 +19,7 @@
 
 一个特效仍对应一个模型实例；一个包可以有多个模型。若同一动画要用于多个模型，分别关联即可，插件会生成名称不重复的独立特效。
 
-导出时，同一个源 `geo` / `geometry` 被多个特效使用只会写入一份运行时模型文件，多个 client entity 共享同一个 geometry identifier。这样重新导入客户端包时不会把同一个模型误显示成多个模型；不同源模型或同一 geo 文件中的不同 geometry 仍会分别列出。
+导出时，同一个源 `geo` / `geometry` 被多个特效使用只会写入一份运行时模型文件和一份 animation JSON，多个 client entity 共享 geometry identifier，并从这份 animation JSON 中引用各自的动画 ID。这样重新导入客户端包时不会把同一个模型或动画误显示成多个文件；不同源模型仍会分别列出。
 
 ## 粒子绑定与别名
 

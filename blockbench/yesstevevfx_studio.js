@@ -324,6 +324,16 @@
       geometryResources.set(sourceKey, resource);
       return resource;
     }
+    const animationResources = new Map();
+    function animationResource(effect) {
+      const sourceKey = effect.model || '__empty__';
+      const existing = animationResources.get(sourceKey);
+      if (existing) return existing;
+      const stem = effect.model ? `model_${token(effect.model)}` : 'empty';
+      const resource = {file: `assets/eyelib/animations/${resourcePack}/${stem}.animation.json`, animations: {}};
+      animationResources.set(sourceKey, resource);
+      return resource;
+    }
     const effectPaths = [];
     for (const effect of project.effects.filter(e => e.enabled)) {
       const base = `${options.generated ? 'vfx_generated.' : ''}${pack}.${effect.name}`;
@@ -350,8 +360,9 @@
           json(`assets/eyelib/particles/${resourcePack}/${token(particle.key)}.json`, doc);
         }
         const id = `animation.yesstevevfx.${base}`;
+        const animations = animationResource(effect);
+        animations.animations[id] = animation;
         entity.animations = {main: id}; entity.scripts = {animate: ['main']};
-        json(`assets/eyelib/animations/${resourcePack}/${effect.name}.animation.json`, {format_version: '1.8.0', animations: {[id]: animation}});
       }
       const entityPath = `assets/eyelib/entity/${resourcePack}/${effect.name}.json`;
       json(entityPath, {'minecraft:client_entity': {description: entity}});
@@ -361,6 +372,9 @@
       const effectPath = `effects/${options.generated ? 'vfx_generated/' : ''}${effect.name}.json`;
       effectPaths.push(effectPath);
       json(effectPath, {format_version: 1, id: `${pack}:${effect.name}`, duration_ticks: Number(effect.duration), client_entity: entityPath});
+    }
+    for (const resource of animationResources.values()) {
+      json(resource.file, {format_version: '1.8.0', animations: resource.animations});
     }
     json('manifest.json', {format_version: 1, pack_id: pack, display_name: project.displayName || pack, effects: effectPaths});
     if (out.size > 4096 || [...out.values()].reduce((n, b) => n + b.length, 0) > 128 * 1024 * 1024) throw new Error('导出包超过 VFX 的资源大小限制');
@@ -1418,7 +1432,7 @@
   const pluginId = registered.yesstevevfx_studio ? 'yesstevevfx_studio' : (loadingLocal || 'yesstevevfx_studio');
   pluginApi.register(pluginId, {
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
-    icon: 'auto_awesome', version: '0.2.2', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
+    icon: 'auto_awesome', version: '0.2.3', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);
