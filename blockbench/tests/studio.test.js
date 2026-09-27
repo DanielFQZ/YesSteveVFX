@@ -202,6 +202,16 @@ test('runtime-pack edit backups live outside the packs directory', () => {
   const root = path.join(os.tmpdir(), 'client', 'config', 'yesstevevfx', 'packs', 'test_effects');
   assert.equal(core.editBackupRoot(root), path.join(os.tmpdir(), 'client', 'config', 'yesstevevfx', 'vfx-edit-backups', 'test_effects'));
 });
+test('recent workflow paths survive lookup and fall back when a folder is removed', t => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'vfx-recent-'));
+  const pack = path.join(parent, '中文特效包');
+  fs.mkdirSync(pack);
+  t.after(() => fs.rmSync(parent, {recursive: true, force: true}));
+  assert.equal(core.rememberPath('test_recent_path', pack), path.resolve(pack));
+  assert.equal(core.recentPath('test_recent_path'), path.resolve(pack));
+  fs.rmSync(pack, {recursive: true});
+  assert.equal(core.recentPath('test_recent_path'), path.resolve(parent));
+});
 test('new pack creates editable geo and animation sources with a preview binding', t => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'vfx-new-pack-'));
   t.after(() => fs.rmSync(parent, {recursive: true, force: true}));

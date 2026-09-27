@@ -591,7 +591,50 @@
     Object.assign(project, next);
     return created.length;
   }
-  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot};
+  // Keep the last directory used by each VFX workflow in Blockbench's
+  // persistent StateMemory.  Blockbench's own resource_id remembers only the
+  // parent directory, while VFX users commonly reopen the exact pack folder.
+  // The small in-memory fallback also keeps these helpers usable in the Node
+  // test harness where Blockbench is not present.
+  const RECENT_PATHS_KEY = 'yesstevevfx_recent_paths';
+  const recentPathCache = {};
+  function recentPaths() {
+    if (typeof StateMemory !== 'undefined') {
+      let value;
+      try { value = StateMemory.get(RECENT_PATHS_KEY); } catch (_) { value = undefined; }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        try { StateMemory.init(RECENT_PATHS_KEY, 'object', {}); } catch (_) { /* older BB builds */ }
+        try { value = StateMemory.get(RECENT_PATHS_KEY); } catch (_) { value = undefined; }
+      }
+      if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    }
+    return recentPathCache;
+  }
+  function recentPath(kind) {
+    const value = recentPaths()[kind];
+    if (typeof value !== 'string' || !value) return '';
+    let candidate = path.resolve(value);
+    // A removed pack should not make Electron reject the dialog's defaultPath;
+    // walk up to the nearest existing directory instead.
+    while (!fs.existsSync(candidate)) {
+      const parent = path.dirname(candidate);
+      if (parent === candidate) return '';
+      candidate = parent;
+    }
+    try { return fs.statSync(candidate).isDirectory() ? candidate : path.dirname(candidate); }
+    catch (_) { return ''; }
+  }
+  function rememberPath(kind, value) {
+    if (typeof kind !== 'string' || !kind || typeof value !== 'string' || !value) return '';
+    const resolved = path.resolve(value);
+    const paths = recentPaths();
+    paths[kind] = resolved;
+    try {
+      if (typeof StateMemory !== 'undefined') StateMemory.save(RECENT_PATHS_KEY);
+    } catch (_) { /* StateMemory is optional in tests/older builds */ }
+    return resolved;
+  }
+  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath};
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
@@ -618,6 +661,14 @@
     saveSettings(session.studio);
   }
   const undoSyncListener = ({entry}) => guard(() => restoreSyncState(entry, 'before'));
+  function pickRecentDirectory(kind, title) {
+    const options = {title};
+    const startpath = recentPath(kind);
+    if (startpath) options.startpath = startpath;
+    const selected = Blockbench.pickDirectory(options);
+    if (selected) rememberPath(kind, selected);
+    return selected;
+  }
   const redoSyncListener = ({entry}) => guard(() => restoreSyncState(entry, 'after'));
   let picker = null;
   function activeStudio() {
@@ -661,13 +712,16 @@
   function showAssetSyncPlan(context, input) {
     const plan = planAssetSync(studio, input);
     if (plan.missing.length) {
+      const textureStart = recentPath('sync_particle_texture');
       const form = Object.fromEntries(plan.missing.map((source, index) => ['texture_' + index,
-        {label: '粒子贴图：' + source, type: 'file', extensions: ['png'], filetype: 'PNG 贴图', readtype: 'none'}]));
+        {label: '粒子贴图：' + source, type: 'file', extensions: ['png'], filetype: 'PNG 贴图', readtype: 'none', value: textureStart}]));
       new Dialog({id: 'vfx_sync_textures', title: '请选择未找到的粒子贴图', width: 850, form,
         onConfirm(values) { guard(() => {
           plan.missing.forEach((source, i) => {
             if (!values['texture_' + i]) throw new Error('尚未指定贴图：' + source);
-            input.particles.find(p => p.source === source).texture = values['texture_' + i];
+            const selected = values['texture_' + i];
+            input.particles.find(p => p.source === source).texture = selected;
+            if (typeof selected === 'string') rememberPath('sync_particle_texture', path.dirname(selected));
           });
           this.hide(); showAssetSyncPlan(context, input);
         }); }}).show();
@@ -1152,22 +1206,29 @@
     Blockbench.showMessageBox({title: 'VFX 导出完成', message: `${result.count} 个文件已写入：\n${result.target}\n\n在游戏执行 /vfx_client reload。${result.backup ? '\n旧包备份：' + result.backup : ''}`});
   }
   function exportClient() {
-    const root = Blockbench.pickDirectory({title: '选择 .minecraft 或启用版本隔离的版本目录'});
+    const root = pickRecentDirectory('client_root', '选择 .minecraft 或启用版本隔离的版本目录');
     if (!root) return;
     const versionsPath = path.join(root, 'versions');
     if (fs.existsSync(versionsPath)) {
       const versions = fs.readdirSync(versionsPath, {withFileTypes: true}).filter(e => e.isDirectory());
       const choices = {root: '公共 .minecraft（未启用版本隔离）'};
       versions.forEach((v, i) => choices[`v${i}`] = `版本目录：${v.name}`);
-      new Dialog({id: 'vfx_target', title: '选择客户端实例', form: {target: {label: '写入位置', type: 'select', options: choices, value: 'root'}},
+      const rememberedTarget = recentPath('client_target');
+      const defaultTarget = rememberedTarget === path.resolve(root) ? 'root' :
+        (versions.map((v, i) => [path.resolve(path.join(versionsPath, v.name)), `v${i}`]).find(([dir]) => dir === rememberedTarget)?.[1] || 'root');
+      new Dialog({id: 'vfx_target', title: '选择客户端实例', form: {target: {label: '写入位置', type: 'select', options: choices, value: defaultTarget}},
         onConfirm(values) { this.hide(); guard(() => {
           const target = values.target === 'root' ? root : path.join(versionsPath, versions[Number(values.target.slice(1))].name);
+          rememberPath('client_target', target);
           exportTo(path.join(target, 'config', 'yesstevevfx', 'packs'));
         }); }}).show();
-    } else exportTo(path.join(root, 'config', 'yesstevevfx', 'packs'));
+    } else {
+      rememberPath('client_target', root);
+      exportTo(path.join(root, 'config', 'yesstevevfx', 'packs'));
+    }
   }
   function createPack() {
-    const parent = Blockbench.pickDirectory({title: '选择新特效包的父目录'});
+    const parent = pickRecentDirectory('new_pack_parent', '选择新特效包的父目录');
     if (!parent) return;
     new Dialog({id: 'vfx_new_pack', title: '新建 YesSteveVFX 特效包', width: 620,
       form: {
@@ -1229,7 +1290,7 @@
         methods: {
           save() { guard(saveWorkspace); }, check() { this.message = validate(studio).join('\n') || '检查通过：每个动画事件、定位器和贴图都有明确绑定。'; },
           help() { showHelp(); }, preview() { guard(() => preview(this.current)); }, capture() { guard(capture); this.$forceUpdate(); },
-          syncAssets() { guard(syncExternalAssets); }, exportClient() { guard(exportClient); }, exportFolder() { guard(() => { const dir = Blockbench.pickDirectory({title: '选择导出父目录（将创建包 ID 子目录）'}); if (dir) exportTo(dir); }); },
+          syncAssets() { guard(syncExternalAssets); }, exportClient() { guard(exportClient); }, exportFolder() { guard(() => { const dir = pickRecentDirectory('export_folder', '选择导出父目录（将创建包 ID 子目录）'); if (dir) exportTo(dir); }); },
           binding(event) { return eventParticle(this.p, this.current, event); },
           bind(event, value) { this.$set(this.current.eventBindings, event.key, {alias: event.effect, particle: value}); },
           modelChanged() { this.current.modelUnresolved = false; },
@@ -1272,7 +1333,7 @@
     dialog.show();
   }
   function importProject() {
-    const root = Blockbench.pickDirectory({title: '选择 VFX 源工程文件夹或已有特效包'});
+    const root = pickRecentDirectory('import_project', '选择 VFX 源工程文件夹或已有特效包');
     if (!root) return;
     if (studio) saveSettings(studio);
     studio = scan(root);
