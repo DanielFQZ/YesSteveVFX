@@ -51,6 +51,25 @@ test('duplicate numeric aliases and particle identifiers export distinct correct
   core.saveSettings(project);
   assert.deepEqual(core.scan(project.root).effects[0].eventBindings, effect.eventBindings);
 });
+test('effects sharing one source geometry export one editable runtime geo', t => {
+  const project = projectFixture(t);
+  const first = project.effects[0];
+  first.model = project.models[0].key;
+  first.texture = project.textures[0].key;
+  first.eventBindings = Object.fromEntries(core.events(project.animations[0].animation).map(event => [event.key, {
+    alias: event.effect, particle: project.particles[0].key
+  }]));
+  const second = structuredClone(first);
+  second.key = 'second'; second.name = 'second'; second.animation = project.animations[0].key;
+  project.effects = [first, second];
+  const output = core.build(project);
+  const models = [...output.keys()].filter(file => file.startsWith('assets/eyelib/models/'));
+  assert.equal(models.length, 1);
+  const firstEntity = JSON.parse(output.get('assets/eyelib/entity/' + project.packId + '/' + first.name + '.json'));
+  const secondEntity = JSON.parse(output.get('assets/eyelib/entity/' + project.packId + '/second.json'));
+  assert.equal(firstEntity['minecraft:client_entity'].description.geometry.default,
+    secondEntity['minecraft:client_entity'].description.geometry.default);
+});
 test('saving native particle files resolves same-name events and rejects outside files', t => {
   const project = projectFixture(t);
   const compiled = structuredClone(project.animations[0].animation);
@@ -211,6 +230,12 @@ test('recent workflow paths survive lookup and fall back when a folder is remove
   assert.equal(core.recentPath('test_recent_path'), path.resolve(pack));
   fs.rmSync(pack, {recursive: true});
   assert.equal(core.recentPath('test_recent_path'), path.resolve(parent));
+});
+test('YSM Molang uses the pack and effect IDs', () => {
+  assert.equal(core.molang({packId: 'demo_pack'}, {name: 'slash'}),
+    "ctrl.vfx_play('demo_pack:slash', 'main');");
+  assert.equal(core.molang({packId: '中文包'}, {name: 'slash'}, 'skill_1'),
+    "ctrl.vfx_play('中文包:slash', 'skill_1');");
 });
 test('new pack creates editable geo and animation sources with a preview binding', t => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'vfx-new-pack-'));

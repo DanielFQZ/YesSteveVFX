@@ -96,6 +96,27 @@
     }
     const manifest = documents.get('manifest.json');
     if (manifest) { project.packId = manifest.pack_id; project.displayName = manifest.display_name || manifest.pack_id; }
+    // Runtime exports before v0.2.2 emitted one geo file per effect. Those
+    // files are byte-for-byte identical apart from their generated geometry
+    // identifier. Collapse only that generated form while scanning, so an old
+    // client pack remains convenient to edit and its entities still resolve to
+    // the one canonical model entry.
+    const modelAliases = new Map();
+    const modelKeyAliases = new Map();
+    if (manifest) {
+      const seenGeometry = new Map();
+      project.models = project.models.filter(model => {
+        if (!model.path.startsWith('assets/eyelib/models/') || !/^geometry\.yesstevevfx\./.test(model.id)) return true;
+        const normalized = clone(model.geometry);
+        if (normalized.description) normalized.description.identifier = '';
+        const signature = JSON.stringify(normalized);
+        const canonical = seenGeometry.get(signature);
+        if (!canonical) { seenGeometry.set(signature, model); return true; }
+        modelAliases.set(model.id, canonical.id);
+        modelKeyAliases.set(model.key, canonical.key);
+        return false;
+      });
+    }
     const used = new Set();
     function addEffect(animation, definition, entity) {
       let name = definition?.id?.split(':').pop() || animation?.id?.split('.').pop() || 'effect';
@@ -105,7 +126,8 @@
       while (used.has(name)) name = `${base}_${index++}`;
       used.add(name);
       const geometryId = entity?.geometry?.default || Object.values(entity?.geometry || {})[0];
-      const model = geometryId ? uniqueMatch(project.models.filter(m => m.id === geometryId)) : uniqueMatch(project.models);
+      const modelId = modelAliases.get(geometryId) || geometryId;
+      const model = modelId ? uniqueMatch(project.models.filter(m => m.id === modelId)) : uniqueMatch(project.models);
       if (geometryId && !model) project.warnings.push(`模型引用无法唯一解析：${geometryId}，请明确选择模型。`);
       if (!geometryId && project.models.length > 1) project.warnings.push(`${animation?.id || name}：有多个候选模型，请在模型选择窗口关联动画。`);
       const texture = textureMatch(entity?.textures?.default || Object.values(entity?.textures || {})[0], project.textures);
@@ -141,6 +163,7 @@
       if (![1, 2].includes(config.version)) throw new Error('不支持的 vfx-project.json 版本');
       project.packId = config.packId; project.displayName = config.displayName;
       project.effects = config.effects;
+      for (const effect of project.effects) if (effect.model) effect.model = modelKeyAliases.get(effect.model) || effect.model;
       for (const particle of project.particles) particle.texture = config.particleTextures?.[particle.key] || particle.texture;
       for (const animation of project.animations) if (!project.effects.some(e => e.animation === animation.key)) {
         const model = uniqueMatch(project.models);
@@ -281,14 +304,32 @@
       out.set(`assets/eyelib/textures/${resourcePack}/${token(key)}.png`, fs.readFileSync(fileAt(project.root, texture.path)));
       return textureId(key);
     }
+    // A source geometry is shared by all effects that reference the same
+    // model/geometry entry.  Older exports wrote one identical geo file per
+    // effect, which made an imported runtime pack look as if it contained
+    // many separate models.  Keep one stable runtime geometry resource per
+    // source model and let each entity point at that identifier.
+    const geometryResources = new Map();
+    function geometryResource(effect) {
+      const sourceKey = effect.model || '__empty__';
+      const existing = geometryResources.get(sourceKey);
+      if (existing) return existing;
+      const geometry = effect.model ? clone(find(project.models, effect.model, '模型').geometry) : emptyGeometry();
+      const stem = effect.model ? `model_${token(effect.model)}` : 'empty';
+      const base = `${options.generated ? 'vfx_generated.' : ''}${pack}.${stem}`;
+      geometry.description.identifier = `geometry.yesstevevfx.${base}`;
+      const file = `assets/eyelib/models/${resourcePack}/${stem}.geo.json`;
+      json(file, {format_version: '1.12.0', 'minecraft:geometry': [geometry]});
+      const resource = {id: geometry.description.identifier, file};
+      geometryResources.set(sourceKey, resource);
+      return resource;
+    }
     const effectPaths = [];
     for (const effect of project.effects.filter(e => e.enabled)) {
       const base = `${options.generated ? 'vfx_generated.' : ''}${pack}.${effect.name}`;
-      const geometry = effect.model ? clone(find(project.models, effect.model, '模型').geometry) : emptyGeometry();
-      geometry.description.identifier = `geometry.yesstevevfx.${base}`;
-      json(`assets/eyelib/models/${resourcePack}/${effect.name}.geo.json`, {format_version: '1.12.0', 'minecraft:geometry': [geometry]});
+      const geometry = geometryResource(effect);
       const entity = {identifier: `yesstevevfx:${resourcePack}/${effect.name}`, materials: {default: 'entity_alphatest'},
-        geometry: {default: geometry.description.identifier}, textures: {}, particle_effects: {},
+        geometry: {default: geometry.id}, textures: {}, particle_effects: {},
         render_controllers: [`controller.render.yesstevevfx.${base}`]};
       if (effect.model) entity.textures.default = putTexture(effect.texture);
       else {
@@ -634,11 +675,16 @@
     } catch (_) { /* StateMemory is optional in tests/older builds */ }
     return resolved;
   }
-  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath};
+  function molang(project, effect, slot = 'main') {
+    if (!project || !effect || !project.packId || !effect.name) return '';
+    const quote = value => String(value).replaceAll('\\', '\\\\').replaceAll("'", "\\'");
+    return `ctrl.vfx_play('${quote(project.packId)}:${quote(effect.name)}', '${quote(slot)}');`;
+  }
+  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath, molang};
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
-  let studio = null, dialog = null, style = null, menu = null;
+  let studio = null, dialog = null, style = null, molangStyle = null, menu = null;
   const actions = [];
   let originalSaveAnimation = null, saveAnimationHook = null;
   const syncUndo = new WeakMap();
@@ -668,6 +714,14 @@
     const selected = Blockbench.pickDirectory(options);
     if (selected) rememberPath(kind, selected);
     return selected;
+  }
+  function copyMolangText(project, effect) {
+    const text = molang(project, effect);
+    if (!text) throw new Error('当前没有可复制的特效 Molang');
+    if (typeof Clipbench !== 'undefined' && typeof Clipbench.setText === 'function') Clipbench.setText(text);
+    else if (typeof navigator !== 'undefined' && navigator.clipboard) navigator.clipboard.writeText(text);
+    else throw new Error('Blockbench 当前环境不支持剪贴板');
+    Blockbench.showQuickMessage('Molang 已复制，可粘贴到 YSM 指令帧。', 2500);
   }
   const redoSyncListener = ({entry}) => guard(() => restoreSyncState(entry, 'after'));
   let picker = null;
@@ -1289,7 +1343,7 @@
         },
         methods: {
           save() { guard(saveWorkspace); }, check() { this.message = validate(studio).join('\n') || '检查通过：每个动画事件、定位器和贴图都有明确绑定。'; },
-          help() { showHelp(); }, preview() { guard(() => preview(this.current)); }, capture() { guard(capture); this.$forceUpdate(); },
+          help() { showHelp(); }, molang(effect) { return molang(studio, effect); }, preview() { guard(() => preview(this.current)); }, copyMolang() { guard(() => copyMolangText(studio, this.current)); }, capture() { guard(capture); this.$forceUpdate(); },
           syncAssets() { guard(syncExternalAssets); }, exportClient() { guard(exportClient); }, exportFolder() { guard(() => { const dir = pickRecentDirectory('export_folder', '选择导出父目录（将创建包 ID 子目录）'); if (dir) exportTo(dir); }); },
           binding(event) { return eventParticle(this.p, this.current, event); },
           bind(event, value) { this.$set(this.current.eventBindings, event.key, {alias: event.effect, particle: value}); },
@@ -1314,7 +1368,7 @@
           <div class="vfx-toolbar"><button @click="tab='effects'">特效绑定</button><button @click="tab='particles'">粒子与贴图</button><button @click="tab='assets'">全部资产</button></div>
           <div v-if="tab==='effects'" class="vfx-columns"><div class="vfx-list"><button @click="add">＋ 新建特效</button><div v-for="e in p.effects" :key="e.key"><input type="checkbox" v-model="e.enabled"><button @click="selected=e.key" :class="{selected:selected===e.key}">{{e.name}}</button></div><p v-if="!p.effects.length">当前工程还没有特效。点击“＋ 新建特效”，再选择模型、动画和粒子。</p></div>
             <div v-if="current" class="vfx-detail">
-              <div class="vfx-detail-heading"><label>特效名<input v-model="current.name"></label><button type="button" class="vfx-danger" @click="remove">删除当前特效</button></div><label>持续时间（tick；20 tick = 1 秒）<input type="number" min="1" max="72000" v-model.number="current.duration"></label>
+              <div class="vfx-detail-heading"><label>特效名<input v-model="current.name"></label><button type="button" class="vfx-danger" @click="remove">删除当前特效</button></div><div class="vfx-molang"><label>YSM 指令帧 Molang</label><div class="vfx-molang-row"><code>{{molang(current)}}</code><button type="button" @click="copyMolang">复制</button></div><small>复制后粘贴到 YSM 动画的“动画效果 → 指令”帧。</small></div><label>持续时间（tick；20 tick = 1 秒）<input type="number" min="1" max="72000" v-model.number="current.duration"></label>
               <label>模型<select v-model="current.model" @change="modelChanged"><option value="">无模型（仅粒子）</option><option v-for="m in p.models" :value="m.key">{{m.path}} · {{m.id}}</option></select></label>
               <p v-if="current.modelUnresolved">模型关系尚未确认。请选择模型，或点击<button @click="modelChanged">确认为仅粒子</button></p>
               <label v-if="current.model">模型贴图<select v-model="current.texture"><option value="">请选择</option><option v-for="t in p.textures" :value="t.key">{{t.path}}</option></select></label>
@@ -1400,6 +1454,7 @@
         .vfx-model-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
         .vfx-models .vfx-model-hint,.vfx-models-empty{color:var(--color-subtle_text);padding:8px 0}
       `);
+      molangStyle = Blockbench.addCSS('.vfx-molang{padding:10px 12px;margin:8px 0 16px;border:1px solid var(--color-border);border-radius:4px;background:var(--color-back)}.vfx-molang-row{display:flex;align-items:center;gap:8px}.vfx-molang-row code{flex:1;min-width:0;padding:7px 9px;overflow-wrap:anywhere;white-space:pre-wrap;background:var(--color-back)}.vfx-molang-row button{flex:0 0 auto}.vfx-molang small{display:block;margin-top:6px;color:var(--color-subtle_text)}');
       const codec = AnimationCodec.codecs.bedrock;
       originalSaveAnimation = codec.saveAnimation;
       saveAnimationHook = function(animation) {
@@ -1431,7 +1486,7 @@
       Blockbench.removeListener('undo', undoSyncListener);
       Blockbench.removeListener('redo', redoSyncListener);
       if (AnimationCodec.codecs.bedrock.saveAnimation === saveAnimationHook) AnimationCodec.codecs.bedrock.saveAnimation = originalSaveAnimation;
-      dialog?.delete(); picker?.delete(); menu?.delete(); actions.forEach(action => action.delete()); MenuBar.update(); style?.delete(); sessions.clear();
+      dialog?.delete(); picker?.delete(); menu?.delete(); actions.forEach(action => action.delete()); MenuBar.update(); style?.delete(); molangStyle?.delete(); sessions.clear();
     }
   });
 })();
