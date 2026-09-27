@@ -1,6 +1,6 @@
 # YesSteveVFX Studio（Blockbench 插件）
 
-桌面版 Blockbench 插件，用于管理一个特效包里的模型、动画、粒子与贴图，编辑源文件，并生成 YesSteveVFX 使用的运行时包。当前插件版本：**0.2.1**。无需修改 Blockbench、YSM 或 eyelib。
+桌面版 Blockbench 插件，用于管理一个特效包里的模型、动画、粒子与贴图，编辑源文件，并生成 YesSteveVFX 使用的运行时包。当前插件版本：**0.2.2**。无需修改 Blockbench、YSM 或 eyelib。
 
 ## 安装 / 更新
 
