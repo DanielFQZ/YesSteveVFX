@@ -2,7 +2,9 @@
 
 YesSteveVFX 是面向 Forge 1.20.1 的客户端特效运行时。一个 effect 由 Bedrock 模型、动画、render controller、纹理和粒子资源组成；YesSteveVFX 管理配置、实例生命周期和 carrier，eyelib 负责实际的 Bedrock 模型、动画和粒子渲染，YSM 只负责通过 Molang 指令帧控制播放。当前构件支持 Forge 1.20.1 的 47.0.0 至 47.x 版本。
 
-当前仓库包含 `1.0.0-pre.1` 预发布实现。它以关闭 Oculus 光影作为基础验收环境，需要 Forge 1.20.1、eyelib；要使用 YSM 动画控制时还需要安装 YSM。
+当前工作版本为 `1.0.0-pre.2-audio.1` 音效测试版。视觉特效需要 Forge 1.20.1、eyelib；YSM 动画控制还需要 YSM。新音效模块使用 Minecraft 原版声音系统，支持单声道 OGG 短音效、位置/跟随播放、Molang 控制，以及 Blockbench 音效管理。纯音效包不要求 eyelib。
+
+音效配置与测试步骤见 [音效使用说明](docs/AUDIO-USER-GUIDE.md)。DanielFQZ 的 YSS fork 已加入 `YssHitResolvedEvent`，VFX 会在检测到该事件时启用可选命中音效桥；上游 PR 是否合并不影响没有 YSS 时的普通音效功能。
 
 运行时关系如下：
 
@@ -93,6 +95,8 @@ ctrl.vfx_set("main", "scale", 1.25)
 ```
 
 函数只接受客户端真实实体的动画上下文，不接受预览实体、fake player 或没有 `allowEmitting()` 权限的上下文。YSM bridge 不保存 YSM Entity、Molang Context 或 AST 引用。
+
+`audio.json` 的 `hit_bindings` 由 YSS 服务端确认事件驱动：需要服务端和客户端都安装带事件的 YSS，以及双方的 VFX。VFX 服务端只转发 model ID、动画名、段下标和目标位置，客户端使用自己加载的音效表匹配播放；没有匹配绑定时静默跳过。
 
 ## 本地手动测试命令
 
