@@ -14,6 +14,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 import java.util.UUID;
+import com.elfmcys.ysmvfx.audio.AudioRuntime;
 
 /**
  * Small client-only command surface used to exercise local VFX packs.
@@ -59,16 +60,29 @@ public final class ClientVfxCommands {
                                                         StringArgumentType.getString(context, "name"),
                                                         DoubleArgumentType.getDouble(context, "value")))))));
 
+        root.then(Commands.literal("sound")
+                .then(Commands.literal("play").then(Commands.argument("sound", ResourceLocationArgument.id())
+                        .suggests((ctx, builder) -> { AudioRuntime.catalog().sounds().keySet().forEach(builder::suggest); return builder.buildFuture(); })
+                        .then(Commands.argument("slot", StringArgumentType.word()).executes(ctx -> {
+                            boolean ok=AudioRuntime.play(localPlayerId(), ResourceLocationArgument.getId(ctx,"sound").toString(),StringArgumentType.getString(ctx,"slot"));
+                            if(!ok) return fail(ctx.getSource(),"[yesstevevfx] Sound unavailable, reload in progress, or invalid slot");
+                            ctx.getSource().sendSuccess(()->Component.literal("[yesstevevfx] Sound queued"),false); return 1;
+                        }))))
+                .then(Commands.literal("stop").then(Commands.argument("slot",StringArgumentType.word()).executes(ctx ->
+                        AudioRuntime.stop(localPlayerId(),StringArgumentType.getString(ctx,"slot"))?1:0))));
         event.getDispatcher().register(root);
     }
 
     private static int reload(CommandSourceStack source) {
-        VfxClientRuntime.reloadLocal();
-        boolean loaded = VfxClientRuntime.isLoaded();
-        source.sendSuccess(() -> Component.literal(loaded
-                ? "[yesstevevfx] reloaded local effect packs (" + VfxClientRuntime.bundles().size() + " effects)"
-                : "[yesstevevfx] failed to load local effect packs"), false);
-        return loaded ? 1 : 0;
+        if(VfxClientRuntime.isReloading()) return fail(source,"[yesstevevfx] Reload already in progress");
+        source.sendSuccess(()->Component.literal("[yesstevevfx] Loading effects and sounds..."),false);
+        VfxClientRuntime.reloadLocal().thenAccept(ok -> {
+            if(ok) source.sendSuccess(()->Component.literal("[yesstevevfx] Loaded " + VfxClientRuntime.bundles().size()
+                    + " effects / " + AudioRuntime.catalog().sounds().size() + " sounds / " + AudioRuntime.catalog().hits().size()
+                    + " hit bindings"),false);
+            else source.sendFailure(Component.literal("[yesstevevfx] Reload failed; see latest.log. Previous configuration retained."));
+        });
+        return 1;
     }
 
     private static int play(CommandSourceStack source, String effectId, String slot) {
