@@ -1,6 +1,6 @@
 # 轻量音效后端与 YesSteveSkill 命中联动方案
 
-日期：2026-10-01。状态：`1.0.0-pre.2-audio.1` 已实现客户端音频后端、Molang 播放/停止、Blockbench 音效管理及测试包；YSS fork 已增加最小 `YssHitResolvedEvent`，VFX 已接入可选反射桥和命中 S2C。使用步骤见 [AUDIO-USER-GUIDE.md](AUDIO-USER-GUIDE.md)。
+日期：2026-10-01。状态：`1.0.0-pre.2-audio.2` 已实现客户端音频后端、Molang 播放/停止、Blockbench 音效管理及测试包；YSS fork 已增加最小 `YssHitResolvedEvent`，VFX 已接入可选反射桥和命中 S2C。使用步骤见 [AUDIO-USER-GUIDE.md](AUDIO-USER-GUIDE.md)。
 
 ## 1. 第一版目标与技术选择
 
@@ -42,7 +42,7 @@ ctrl.vfx_sound_stop('swing');
 
 | 函数 | 行为 |
 | --- | --- |
-| `ctrl.vfx_sound_play(sound_id, slot)` | 在当前 YSM 实体位置播放已加载音效；相同来源 UUID + slot 的旧声音停止并替换 |
+| `ctrl.vfx_sound_play(sound_id, slot)` | 在当前 YSM 实体位置播放已加载音效；相同来源 UUID + slot 的多次调用允许叠加 |
 | `ctrl.vfx_sound_stop(slot)` | 停止该来源实体该音频槽位的声音；不影响视觉特效同名槽位 |
 
 音量、音高、跟随和距离写在音效配置中，第一版无需长参数列表。函数返回 `1` 只表示校验后接受排队，`0` 表示资源/上下文/参数/队列容量不满足；不代表已经听到声音。停止合法但不存在的槽位是无害操作。
@@ -60,8 +60,11 @@ config/yesstevevfx/packs/combat/
   manifest.json
   audio.json
   effects/...
-  assets/eyelib/...        # 现有模型、动画、粒子
-  assets/yesstevevfx/sounds/
+  models/                  # Bedrock 模型
+  animations/              # Bedrock 动画
+  particles/               # Bedrock 粒子
+  textures/                # 贴图
+  sounds/                  # OGG 音效
     挥刀.ogg
     命中.ogg
 ```
@@ -73,14 +76,14 @@ config/yesstevevfx/packs/combat/
   "format_version": 1,
   "sounds": {
     "yesstevevfx:combat/slash": {
-      "file": "assets/yesstevevfx/sounds/挥刀.ogg",
+      "file": "sounds/挥刀.ogg",
       "volume": 1.0,
       "pitch": 1.0,
       "range": 24.0,
       "follow": true
     },
     "yesstevevfx:combat/hit": {
-      "file": "assets/yesstevevfx/sounds/命中.ogg",
+      "file": "sounds/命中.ogg",
       "volume": 1.0,
       "pitch": 1.0,
       "range": 24.0,
@@ -98,7 +101,7 @@ config/yesstevevfx/packs/combat/
 }
 ```
 
-`model_id` 使用 YSS 握手/服务端配置中实际模型 ID，不是显示名或随意填写的文件夹名；`animation` 是 YSS 实际动画名。编辑器说明这两个值的来源，并提供接收命中事件的诊断输出帮助匹配。`segment_index` 对应 YSS 段顺序，调整段顺序后必须重新确认映射。
+`model_id` 使用 YSM 当前模型对外公开的 `displayPath`（YSM `CustomEntity.getModelId()` 返回值）。YSS 只转发并使用这个 YSM 模型 ID 查找自己的攻击判定工程，不需要用户另行寻找一套 YSS 模型 ID；YSS 工程目录可以是该路径经过归一化后的本地名称。它不是 VFX 的 `geometry.*` 标识，也不是 YSM 内部资源协议使用的哈希值。`animation` 是 YSM 动画名，同时必须存在于 YSS 的 `hit.json -> animations`；`segment_index` 对应 YSS `segments` 数组的零基顺序，调整段顺序后必须重新确认映射。
 
 字段规则：file 必填且在当前包内；volume 默认 1，范围 0..1；pitch 默认 1，范围 0.5..2；range 默认 24，范围 1..64 格；follow 默认 false。第一版固定使用 `SoundSource.PLAYERS`，跟随 Minecraft“主音量”和“玩家”音量滑块。range 定义为 volume=1 时原版线性距离衰减范围，不能只靠放大音量伪造。
 
@@ -125,7 +128,7 @@ YSS confirmed-hit S2C -> hit binding lookup ----------+
 - 新旧 catalog 以 generation 管理：先完成配置/OGG 预检，再进行资源重载。失败恢复旧资源索引并重新加载，成功清理旧声音/旧排队命令并发布新 generation。旧声音可能因音频引擎重载停止，但不能出现半新半旧的资产索引。
 - Molang 线程只记录 UUID、ID、slot、generation 和世界会话标识，操作 SoundManager 在客户端主线程；不要保存 IContext/Entity/AST。复用 YSM 的动作权限与时间轴单次执行规则，不按每个渲染 pass 播放。
 - 不使用“同 tick 同音效 ID”粗暴去重：不同玩家、合法的不同关键帧和多目标命中可以同时发声；额外防重需要可靠的事件身份，不能用位置猜测。
-- 默认最大活动声音 32、每来源实体 8、动作队列 256；先替换同槽位，再在超限时淘汰最早创建实例。音频解码有独立预算（累计预检 PCM 最多 64 MiB），与现有压缩资源预算分别计数；预检不保留第二份长期 PCM 缓存。
+- 默认最大活动声音 32、每来源实体 8、动作队列 256；同一 slot 的 play 允许叠加，stop 按 slot 停止该组全部声音，超限时淘汰最早创建实例。音频解码有独立预算（累计预检 PCM 最多 64 MiB），与现有压缩资源预算分别计数；预检不保留第二份长期 PCM 缓存。
 - 声音自然结束、主动 stop、跟随实体消失、离开世界、断线和成功 reload 都清理引用。固定位置短音效允许在来源实体消失后自然播完；世界切换必须停止。暂停/恢复与 MC 保持一致。
 - 模块边界：`AudioBackend.play(request) -> AudioHandle`、`stop(handle)`、`clear()`、资源重载接口；外部只接触 sound ID/句柄，不暴露 OpenAL source。未来迁移 ESM 不改变 Molang 和包配置。
 
@@ -172,11 +175,11 @@ reload 提示增加“特效数量 / 音效数量 / 命中绑定数量”。拟�
 
 - 无 eyelib 也能手动播放声音；纯音频包和旧视觉包均正确 reload。
 - 中文路径、重名/缺文件、错误声道/编码、解码超预算有明确诊断；失败 reload 保留有效配置。
-- 指令帧施法声正常；同槽替换、不同槽叠加、不同玩家独立；观察性求值不响，允许动作的关键帧不重响。
+- 指令帧施法声正常；同槽叠加、不同槽叠加、不同玩家独立；观察性求值不响，允许动作的关键帧不重响。
 - 第一/第三人称、低帧率跨帧、循环动画、暂停/恢复、世界切换、reload、设备重建不泄露声音实例。若 YSM 根本不求值指令帧，要如实记录宿主限制。
 - 距离衰减、玩家/主音量滑块、follow 位置和自然结束均符合配置。
 - YSS 空挥/拒绝/hurt false 不响，纯伤害段成功可响；延迟段在实际出伤时响且一次，多目标与后续连击正确。
 - 命中重复消息、客户端缺资源、跨维度、未安装 VFX 的客户端不会引发崩溃或重复播放；专用服务器可启动。
 - 测试包括资源解析、队列/槽位/会话清理、命中 selector/事件去重、即时与延迟结果分支，以及实际客户端听测。构建成功不代替听测通过。
 
-本轮交付客户端音效测试构建、编辑器、示例包与 YSS 事件 PR。不修改 eyelib/YSM，不发布 VFX 正式版。上游事件合并后，再实现并验证第 6 节的可选服务端网络桥；在此之前不能把指令帧挥刀声当成命中声。
+本轮交付客户端音效测试构建、编辑器、示例包与 YSS fork 的事件桥接。当前服务端 VFX 通过反射监听 `YssHitResolvedEvent`，客户端按 `hit_bindings` 匹配并播放；未安装新 YSS 时桥接器自动停用。仍需在实际技能、多人和延迟出伤场景中验收，不把配置解析或构建成功当成游戏听测结论。

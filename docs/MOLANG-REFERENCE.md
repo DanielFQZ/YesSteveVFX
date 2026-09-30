@@ -32,6 +32,17 @@ Blockbench 导出的动画 JSON 应包含 `timeline`：
 
 ## 函数
 
+### `ctrl.vfx_sound_play(sound_id, slot)` / `ctrl.vfx_sound_stop(slot)`
+
+从 `1.0.0-pre.2-audio.2` 起可播放/停止包内单声道 OGG 短音效。示例：
+
+```molang
+ctrl.vfx_sound_play('yesstevevfx:vfx_audio_demo/slash', 'swing');
+ctrl.vfx_sound_stop('swing');
+```
+
+两行分别放在开始和提前结束的指令帧；放在同一帧会立即停止。音频 slot 与视觉 slot 独立；同实体同 slot 的多次 play 会叠加播放，stop 会停止该 slot 的全部声音。play/stop 返回 1 代表接受排队，0 代表资源、参数、动作上下文或重载状态不允许；停止不存在的合法槽位无害。音量/距离/跟随配置在 `audio.json`，详见 [音效使用说明](AUDIO-USER-GUIDE.md)。声音只在本客户端触发；YSS 命中音效通过可选服务端桥接。
+
 ### `ctrl.vfx_play(effect_id, slot)`
 
 启动一个完整 effect。`effect_id` 必须是已经通过 `/vfx_client reload` 加载的完整资源 ID，例如 `yesstevevfx:demo`；`slot` 是来源实体本地的播放槽位，建议使用 `main`、`weapon` 或 `skill_1` 这类稳定名称。

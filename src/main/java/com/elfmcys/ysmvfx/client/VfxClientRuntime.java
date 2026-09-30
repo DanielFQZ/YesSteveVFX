@@ -12,6 +12,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.util.concurrent.CompletableFuture;
+import com.elfmcys.ysmvfx.audio.*;
+import com.elfmcys.ysmvfx.asset.VfxAssetCatalog;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -24,6 +27,9 @@ public final class VfxClientRuntime {
     private static volatile Map<String, EffectAssetBundle> bundles = Map.of();
     private static volatile EffectBackend backend = UnavailableEffectBackend.INSTANCE;
     private static volatile boolean loaded;
+    private static boolean reloading;
+    private static long resourceGeneration;
+    private static long worldSession;
 
     private VfxClientRuntime() {
     }
@@ -40,36 +46,64 @@ public final class VfxClientRuntime {
         loaded = false;
     }
 
-    public static void reloadLocal() {
-        Minecraft minecraft = Minecraft.getInstance();
-        Path packs = minecraft.gameDirectory.toPath()
-                .resolve("config").resolve("yesstevevfx").resolve("packs");
-        reload(new LocalVfxAssetSource(packs));
+    public static CompletableFuture<Boolean> reloadLocal() {
+        Path packs = Minecraft.getInstance().gameDirectory.toPath()
+                .resolve("config/yesstevevfx/packs");
+        return reload(new LocalVfxAssetSource(packs));
     }
 
-    /** Publishes one complete asset snapshot, allowing a future YSM container source. */
-    public static void reload(VfxAssetSource source) {
+    private record Prepared(VfxAssetCatalog catalog, VfxAudioResourcePack.Prepared audio) { }
+
+    /** Read/decode on a worker; commit registry updates on the client thread. */
+    public static CompletableFuture<Boolean> reload(VfxAssetSource source) {
+        if (reloading) return CompletableFuture.completedFuture(false);
+        reloading = true;
+        long session = worldSession, generation = ++resourceGeneration;
+        var mc = Minecraft.getInstance();
+        var oldAudio = VfxAudioResourcePack.current();
+        var oldBundles = bundles;
         boolean wasLoaded = loaded;
-        try {
-            Map<String, EffectAssetBundle> next = source.load();
-            backend.reload(next);
-            stopAll();
-            bundles = next;
-            loaded = true;
-            LOGGER.info("Loaded {} YesSteveVFX effect definition(s)", next.size());
-        } catch (Exception | LinkageError exception) {
-            // Backends are required to publish atomically. Keep the previous
-            // snapshot and its command visibility when a new source or backend
-            // rejects a reload; this also makes a typo in one pack recoverable
-            // with a later reload without discarding the loaded asset snapshot.
-            // A backend may have had to tear down live instances while rolling
-            // back global registries, so discard their handles rather than
-            // leaving stale entries in the action and lifetime maps.
-            stopAll();
-            loaded = wasLoaded;
-            LOGGER.error("Could not load YesSteveVFX assets; previous asset generation remains loaded, active effects were stopped", exception);
-        }
+        AudioRuntime.loading();
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                var next = source.loadCatalog();
+                return new Prepared(next, VfxAudioResourcePack.prepare(AudioCatalog.parse(next), generation));
+            } catch (Exception e) { throw new java.util.concurrent.CompletionException(e); }
+        }, net.minecraft.Util.backgroundExecutor()).thenComposeAsync(next -> {
+            if (worldSession != session) throw new IllegalStateException("World changed while loading VFX resources");
+            VfxAudioResourcePack.publish(next.audio());
+            CompletableFuture<Void> sounds = oldAudio.catalog().sounds().isEmpty() && next.audio().catalog().sounds().isEmpty()
+                    ? CompletableFuture.completedFuture(null) : AudioRuntime.reloadSounds();
+            return sounds.thenApplyAsync(ignored -> {
+                if (worldSession != session) throw new IllegalStateException("World changed while publishing VFX resources");
+                stopAll();
+                try { backend.reload(next.catalog().effects()); }
+                catch (Exception e) { throw new java.util.concurrent.CompletionException(e); }
+                bundles = next.catalog().effects();
+                loaded = true;
+                AudioRuntime.publish(next.audio().catalog());
+                LOGGER.info("Loaded {} effects, {} sounds, {} hit bindings (YSS hit bridge optional)",
+                        bundles.size(), next.audio().catalog().sounds().size(), next.audio().catalog().hits().size());
+                return true;
+            }, mc);
+        }, mc).handleAsync((success, error) -> {
+            if (error == null) return CompletableFuture.completedFuture(true);
+            LOGGER.error("Could not reload VFX assets; restoring previous resources", error);
+            boolean changed = VfxAudioResourcePack.current() != oldAudio;
+            VfxAudioResourcePack.publish(oldAudio);
+            CompletableFuture<Void> restore = changed ? AudioRuntime.reloadSounds() : CompletableFuture.completedFuture(null);
+            return restore.handleAsync((unused, rollbackError) -> {
+                if (rollbackError != null) LOGGER.error("Audio rollback failed; audio disabled until a successful reload", rollbackError);
+                if (worldSession == session) {
+                    bundles = oldBundles; loaded = wasLoaded;
+                    if (rollbackError == null) AudioRuntime.publish(oldAudio.catalog());
+                }
+                return false;
+            }, mc);
+        }, mc).thenCompose(future -> future).whenCompleteAsync((result, error) -> reloading = false, mc);
     }
+
+    public static boolean isReloading() { return reloading; }
 
     public static boolean isLoaded() {
         return loaded;
@@ -182,6 +216,7 @@ public final class VfxClientRuntime {
     }
 
     public static void tick(ClientLevel level) {
+        AudioRuntime.tick(level);
         // Preserve source order, including play -> set -> stop in one instruction frame.
         // Never retain YSM entities, execution contexts or AST nodes in this queue.
         for (VfxActionQueue.Action action : PENDING.drain()) {
@@ -238,6 +273,8 @@ public final class VfxClientRuntime {
     }
 
     public static void unload() {
+        worldSession++;
+        AudioRuntime.unload();
         PENDING.clear();
         backend.unload();
         ACTIVE.clear();
@@ -245,7 +282,7 @@ public final class VfxClientRuntime {
         loaded = false;
     }
 
-    private static Entity findEntity(ClientLevel level, UUID id) {
+    public static Entity findEntity(ClientLevel level, UUID id) {
         // The local player is not guaranteed to be present in the renderer's
         // iterable (first-person and culling paths can omit it), but it is
         // always part of the client player list.

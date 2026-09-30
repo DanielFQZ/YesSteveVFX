@@ -7,4 +7,7 @@ import java.util.Map;
 @FunctionalInterface
 public interface VfxAssetSource {
     Map<String, EffectAssetBundle> load() throws IOException;
+    default VfxAssetCatalog loadCatalog() throws IOException {
+        return new VfxAssetCatalog(load(), Map.of());
+    }
 }

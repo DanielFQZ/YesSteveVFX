@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "sounds": {
+    "yesstevevfx:vfx_audio_demo/slash": {
+      "file": "assets/yesstevevfx/sounds/挥刀.ogg",
+      "volume": 1,
+      "pitch": 1,
+      "range": 24,
+      "follow": true
+    }
+  },
+  "hit_bindings": []
+}

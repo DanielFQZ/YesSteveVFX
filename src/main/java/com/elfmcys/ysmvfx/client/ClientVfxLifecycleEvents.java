@@ -12,6 +12,7 @@ import net.minecraftforge.fml.common.Mod;
         bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class ClientVfxLifecycleEvents {
     private static ClientLevel lastLevel;
+    private static boolean needsReload;
 
     private ClientVfxLifecycleEvents() {
     }
@@ -28,15 +29,20 @@ public final class ClientVfxLifecycleEvents {
                 VfxClientRuntime.unload();
             }
             lastLevel = null;
+            needsReload = false;
             return;
         }
         if (lastLevel != level) {
             VfxClientRuntime.unload();
             // One automatic attempt per world. Failed files are retried explicitly
             // by the reload command, rather than parsed and logged twenty times a second.
-            VfxClientRuntime.reloadLocal();
+            needsReload = true;
         }
         lastLevel = level;
+        if (needsReload && !VfxClientRuntime.isReloading()) {
+            needsReload = false;
+            VfxClientRuntime.reloadLocal();
+        }
         VfxClientRuntime.tick(level);
     }
 }

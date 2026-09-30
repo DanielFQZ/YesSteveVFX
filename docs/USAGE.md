@@ -12,14 +12,13 @@ YSM 动画控制的 Molang 函数规范、Blockbench 指令帧写法和排错日
 config/yesstevevfx/packs/my_pack/
 ├── manifest.json
 ├── effects/fireball.json
-└── assets/eyelib/
-    ├── entity/fireball.json
-    ├── models/fireball.geo.json
-    ├── animations/fireball.animation.json
-    ├── animation_controllers/*.json       # 可选
-    ├── render_controllers/fireball.json
-    ├── particles/fireball.json             # 可选
-    └── textures/fireball.png
+├── entity/fireball.json
+├── models/fireball.geo.json
+├── animations/fireball.animation.json
+├── animation_controllers/*.json       # 可选
+├── render_controllers/fireball.json
+├── particles/fireball.json             # 可选
+└── textures/fireball.png
 ```
 
 ## manifest.json
@@ -42,7 +41,7 @@ config/yesstevevfx/packs/my_pack/
   "format_version": 1,
   "id": "my_pack:fireball",
   "duration_ticks": 60,
-  "client_entity": "assets/eyelib/entity/fireball.json"
+  "client_entity": "entity/fireball.json"
 }
 ```
 
@@ -67,7 +66,7 @@ client entity、geometry、animation、render controller 和 particle 的标识�
 }
 ```
 
-纹理文件放在 `assets/eyelib/textures/` 中，JSON 中通常写不带 `.png` 的路径。YesSteveVFX 会同时发布带扩展名和不带扩展名的纹理别名，模型和粒子可以共用同一张图。
+纹理文件放在 `textures/` 中，JSON 中通常写不带 `.png` 的路径。YesSteveVFX 会同时发布带扩展名和不带扩展名的纹理别名，模型和粒子可以共用同一张图。旧包中的 `assets/eyelib/textures/` 仍可加载。
 
 动画中的粒子事件通过 client entity 的 `particle_effects` 短名映射到粒子 ID：
 

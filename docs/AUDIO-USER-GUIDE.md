@@ -1,6 +1,6 @@
 # 音效测试版使用说明
 
-适用版本：`1.0.0-pre.2-audio.1`，Forge 1.20.1。安装新 JAR 后完整重启 Minecraft。音效使用原版声音系统，受“主音量”和“玩家”音量影响，不要求更换 eyelib。
+适用版本：`1.0.0-pre.2-audio.2`，Forge 1.20.1。安装新 JAR 后完整重启 Minecraft。音效使用原版声音系统，受“主音量”和“玩家”音量影响，不要求更换 eyelib。
 
 ## 先用示例确认声音
 
@@ -24,9 +24,11 @@ ctrl.vfx_sound_play('yesstevevfx:vfx_audio_demo/slash', 'swing');
 
 需要提前停止时，在另一帧写 `ctrl.vfx_sound_stop('swing');`。短声音会自然结束，无须每次填写 stop。可以和 `ctrl.vfx_play(...)` 放在同一帧，两者互不依赖。
 
-同一实体、同一声音槽位再次 play 会替换旧声；不同槽位/实体可以叠加。slot 用 1–64 位字母、数字、下划线、点或短横线。声音槽位和视觉特效槽位彼此独立。返回 1 仅表示进入队列，不保证设备已发声。指令必须位于 YSM 实际执行的动画中；它不因 Blockbench 普通动画预览而自动执行。
+同一实体、同一声音槽位再次 play 也会叠加，适合连续打击和多段音效；stop 会停止该实体该 slot 的全部声音。不同槽位/实体也可以叠加。slot 用 1–64 位字母、数字、下划线、点或短横线。声音槽位和视觉特效槽位彼此独立。返回 1 仅表示进入队列，不保证设备已发声。指令必须位于 YSM 实际执行的动画中；它不因 Blockbench 普通动画预览而自动执行。
 
 上述指令是本地客户端触发，不广播施法。命中自动播放使用单独的 `hit_bindings`，由带有 `YssHitResolvedEvent` 的 YSS fork 在服务端确认后广播；旁观者需要安装 VFX 并加载同名音效绑定才能听到。没有该 YSS 事件时，普通 Molang 音效仍可用，命中绑定不会误触发。
+
+命中绑定中的 `model_id` 以 YSM 当前模型的公开 `displayPath` 为准，也就是 YSM `CustomEntity.getModelId()` 对外提供的模型 ID。YSS 只读取这个值并查找对应的攻击判定工程；它不拥有另一套需要用户填写的模型 ID。YSM 内部用于资源协议的哈希值不需要填写到 `audio.json`。`animation` 是 YSM 动画名，同时必须存在于 YSS 工程的 `hit.json -> animations`；`segment_index` 是该动画 `segments` 数组的零基下标。VFX geometry 文件中的 `geometry.*` 标识与这些字段无关。
 
 ## 在 VFX 插件中导入自己的音频
 
@@ -36,7 +38,7 @@ ctrl.vfx_sound_play('yesstevevfx:vfx_audio_demo/slash', 'swing');
 4. 点击试听检查内容；点击复制播放/停止指令，粘贴到 YSM 动画指令帧。
 5. 客户端目录内的包直接 reload；外部工程使用现有 **导出到客户端** 功能后 reload。
 
-导入会把音频复制到包内 `assets/yesstevevfx/sounds/`，保留中文文件名。同名同内容复用；同名不同内容增加 `_2` 等数字，不覆盖原文件。逻辑音效 ID 使用 `yesstevevfx:包名/音效名`，仅小写英文、数字、`_ . / -`，不允许 `..` 和空路径段；改 ID 后需要更新指令。
+导入会把音频复制到包内 `sounds/`，保留中文文件名。同名同内容复用；同名不同内容增加 `_2` 等数字，不覆盖原文件。逻辑音效 ID 使用 `yesstevevfx:包名/音效名`，仅小写英文、数字、`_ . / -`，不允许 `..` 和空路径段；改 ID 后需要更新指令。旧包中的 `assets/yesstevevfx/sounds/` 仍可加载。
 
 试听只验证音频内容、音量和音高；空间衰减与实体跟随要在游戏中测试。移除定义不会删除原 OGG。已有命中绑定引用某个音效时，须一并删除或修改绑定才能保存。
 
@@ -49,7 +51,7 @@ ctrl.vfx_sound_play('yesstevevfx:vfx_audio_demo/slash', 'swing');
   "format_version": 1,
   "sounds": {
     "yesstevevfx:combat/slash": {
-      "file": "assets/yesstevevfx/sounds/挥刀.ogg",
+      "file": "sounds/挥刀.ogg",
       "volume": 1,
       "pitch": 1,
       "range": 24,
@@ -67,7 +69,7 @@ volume 为 0–1，pitch 为 0.5–2，range 为 1–64 格（小数向上取整
 ## 本轮人工测试
 
 - 命令听到示例声；YSM 第一/第三人称技能动画在指定帧响起。
-- 同槽替换、不同槽叠加、提前 stop；循环动画是否按预期重复。
+- 同槽叠加、不同槽叠加、按 slot 批量 stop；循环动画是否按预期重复。
 - 跟随移动、距离衰减、玩家音量滑块、暂停恢复。
 - reload、换维度、退出重进后仍能正常播放，旧声音不残留。
 - 原有模型和粒子效果回归。

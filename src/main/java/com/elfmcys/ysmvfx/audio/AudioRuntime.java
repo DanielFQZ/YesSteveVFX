@@ -16,7 +16,9 @@ public final class AudioRuntime {
     private static final Map<Key,AudioBackend.Handle> ACTIVE=new LinkedHashMap<>();
     private static volatile AudioCatalog catalog=AudioCatalog.EMPTY;
     private static volatile boolean ready;
-    private record Key(UUID owner,String slot) { }
+    /** A voice gets its own identity; the slot is a stop-group, not a replacement key. */
+    private record Key(UUID owner,String slot,long voiceId) { }
+    private static long nextVoiceId;
     private AudioRuntime(){ }
     public static AudioCatalog catalog(){return catalog;}
     public static void loading(){ready=false;clear();}
@@ -40,10 +42,8 @@ public final class AudioRuntime {
         var listener = Minecraft.getInstance().getCameraEntity();
         if (listener == null || !Double.isFinite(position.x) || !Double.isFinite(position.y)
                 || !Double.isFinite(position.z) || listener.distanceToSqr(position) > sound.range() * sound.range()) return false;
-        Key key = new Key(owner, "hit:" + sequence);
-        while (ACTIVE.keySet().stream().filter(k -> k.owner().equals(owner)).count() >= 8)
-            evict(ACTIVE.keySet().stream().filter(k -> k.owner().equals(owner)).findFirst().orElseThrow());
-        while (ACTIVE.size() >= 32) evict(ACTIVE.keySet().iterator().next());
+        Key key = new Key(owner, "hit:" + sequence, nextVoiceId++);
+        enforceVoiceLimits(owner);
         ACTIVE.put(key, BACKEND.play(sound, event, position, target));
         return true;
     }
@@ -59,18 +59,34 @@ public final class AudioRuntime {
         if(Minecraft.getInstance().isPaused()) return;
         for(var action:QUEUE.drain()) {
             if(!ready || action.session()!=QUEUE.session()) continue;
-            Key key=new Key(action.owner(),action.slot());
-            var old=ACTIVE.remove(key);if(old!=null) BACKEND.stop(old);
-            if(action.sound()==null) continue;
+            if(action.sound()==null) {
+                stopSlot(action.owner(), action.slot());
+                continue;
+            }
+            Key key=new Key(action.owner(),action.slot(),nextVoiceId++);
             var sound=catalog.sounds().get(action.sound());
             var event=VfxAudioResourcePack.current().events().get(action.sound());
             var owner=VfxClientRuntime.findEntity(level,action.owner());
             if(sound==null || event==null || owner==null || owner.isRemoved()) continue;
-            while(ACTIVE.keySet().stream().filter(k->k.owner().equals(key.owner())).count()>=8)
-                evict(ACTIVE.keySet().stream().filter(k->k.owner().equals(key.owner())).findFirst().orElseThrow());
-            while(ACTIVE.size()>=32) evict(ACTIVE.keySet().iterator().next());
+            enforceVoiceLimits(action.owner());
             ACTIVE.put(key,BACKEND.play(sound,event,owner));
         }
+    }
+    private static void enforceVoiceLimits(UUID owner) {
+        while(ACTIVE.keySet().stream().filter(k->k.owner().equals(owner)).count()>=8)
+            evict(ACTIVE.keySet().stream().filter(k->k.owner().equals(owner)).findFirst().orElseThrow());
+        while(ACTIVE.size()>=32) evict(ACTIVE.keySet().iterator().next());
+    }
+    private static boolean stopSlot(UUID owner, String slot) {
+        boolean stopped = false;
+        var iterator = ACTIVE.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            if (entry.getKey().owner().equals(owner) && entry.getKey().slot().equals(slot)) {
+                BACKEND.stop(entry.getValue()); iterator.remove(); stopped = true;
+            }
+        }
+        return stopped;
     }
     private static void evict(Key key){var voice=ACTIVE.remove(key);if(voice!=null) BACKEND.stop(voice);}
     public static void clear(){QUEUE.invalidate();ACTIVE.values().forEach(BACKEND::stop);ACTIVE.clear();}

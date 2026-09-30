@@ -41,12 +41,12 @@ test('duplicate numeric aliases and particle identifiers export distinct correct
   const read = file => JSON.parse(output.get(file));
   const definition = read(`effects/${effect.name}.json`);
   const entity = read(definition.client_entity)['minecraft:client_entity'].description;
-  const animationFile = [...output.keys()].find(file => file.startsWith(`assets/eyelib/animations/${project.packId}/`));
+  const animationFile = [...output.keys()].find(file => file.startsWith(`animations/${project.packId}/`));
   const animation = read(animationFile).animations[entity.animations.main];
   const events = core.events(animation);
   assert.notEqual(events[0].effect, events[1].effect);
   assert.equal(new Set(events.map(e => entity.particle_effects[e.effect])).size, 2);
-  const identifiers = [...output].filter(([name]) => name.includes('/particles/')).map(([, buf]) => JSON.parse(buf).particle_effect.description.identifier);
+  const identifiers = [...output].filter(([name]) => name.startsWith('particles/') || name.includes('/particles/')).map(([, buf]) => JSON.parse(buf).particle_effect.description.identifier);
   for (const event of events) assert.ok(identifiers.includes(entity.particle_effects[event.effect]));
   assert.equal(JSON.stringify(project.animations), original, 'export never rewrites source animations');
   core.saveSettings(project);
@@ -64,10 +64,10 @@ test('effects sharing one source geometry export one editable runtime geo', t =>
   second.key = 'second'; second.name = 'second'; second.animation = project.animations[0].key;
   project.effects = [first, second];
   const output = core.build(project);
-  const models = [...output.keys()].filter(file => file.startsWith('assets/eyelib/models/'));
+  const models = [...output.keys()].filter(file => file.startsWith('models/'));
   assert.equal(models.length, 1);
-  const firstEntity = JSON.parse(output.get('assets/eyelib/entity/' + project.packId + '/' + first.name + '.json'));
-  const secondEntity = JSON.parse(output.get('assets/eyelib/entity/' + project.packId + '/second.json'));
+  const firstEntity = JSON.parse(output.get('entity/' + project.packId + '/' + first.name + '.json'));
+  const secondEntity = JSON.parse(output.get('entity/' + project.packId + '/second.json'));
   assert.equal(firstEntity['minecraft:client_entity'].description.geometry.default,
     secondEntity['minecraft:client_entity'].description.geometry.default);
 });
@@ -81,7 +81,7 @@ test('effects sharing one source geometry export one animation file with all ent
     return effect;
   });
   const output = core.build(project);
-  const animations = [...output.keys()].filter(file => file.startsWith(`assets/eyelib/animations/${project.packId}/`));
+  const animations = [...output.keys()].filter(file => file.startsWith(`animations/${project.packId}/`));
   assert.equal(animations.length, 1);
   assert.equal(Object.keys(JSON.parse(output.get(animations[0])).animations).length, project.effects.length);
 });
@@ -93,8 +93,8 @@ test('runtime asset names stay readable and only suffix real collisions', t => {
   effect.eventBindings = Object.fromEntries(core.events(project.animations[0].animation).map(event => [event.key, {alias: event.effect, particle: project.particles[0].key}]));
   project.effects = [effect];
   const output = core.build(project);
-  const modelFiles = [...output.keys()].filter(file => file.includes('/models/'));
-  const animationFiles = [...output.keys()].filter(file => file.includes('/animations/'));
+  const modelFiles = [...output.keys()].filter(file => file.startsWith('models/') || file.includes('/models/'));
+  const animationFiles = [...output.keys()].filter(file => file.startsWith('animations/') || file.includes('/animations/'));
   assert.equal(modelFiles.length, 1);
   assert.equal(animationFiles.length, 1);
   assert.ok(!modelFiles[0].match(/[0-9a-f]{12}/i));
@@ -117,7 +117,7 @@ test('export resolves case, duplicate basenames, Chinese names and reserved empt
   particleEffect.eventBindings = Object.fromEntries(core.events(project.animations[0].animation).map((event, index) => [event.key, {alias: event.effect, particle: project.particles[index].key}]));
   project.particles.forEach(p => p.texture = project.textures[0].key);
   project.effects.push(particleEffect);
-  const out = core.build(project), prefix = `assets/eyelib/`;
+  const out = core.build(project), prefix = '';
   for (const name of ['test_model', 'test_model_2', 'test_model_3', 'model']) {
     assert.ok(out.has(`${prefix}models/${project.packId}/${name}.geo.json`));
   }
@@ -126,7 +126,7 @@ test('export resolves case, duplicate basenames, Chinese names and reserved empt
   }
   assert.ok(out.has(`${prefix}particles/${project.packId}/12.json`));
   assert.ok(out.has(`${prefix}particles/${project.packId}/12_2.json`));
-  for (const [file, data] of out) if (file.includes('/entity/')) {
+  for (const [file, data] of out) if (file.startsWith('entity/') || file.includes('/entity/')) {
     const entity = JSON.parse(data)['minecraft:client_entity'].description;
     assert.ok(out.has(prefix + entity.textures.default.split(':')[1] + '.png'));
     for (const id of Object.values(entity.particle_effects)) {
@@ -161,7 +161,7 @@ test('external asset sync removes legacy hash suffixes from filenames', t => {
   const source = path.join(external.root, 'particles', 'slash_abcdef123456.json');
   fs.copyFileSync(path.join(external.root, 'particles/12.json'), source);
   const plan = core.planAssetSync(project, {particles: [{source}]});
-  assert.equal(plan.particles[0].target, 'assets/eyelib/particles/slash.json');
+  assert.equal(plan.particles[0].target, 'particles/slash.json');
 });
 test('saving native particle files resolves same-name events and rejects outside files', t => {
   const project = projectFixture(t);
@@ -192,12 +192,12 @@ test('sync copies external particles with textures, preserves originals and reus
   const input = {particles: [{source}], animations: [path.join(external.root, external.animations[0].path)]};
   const plan = core.planAssetSync(project, input);
   assert.deepEqual(plan.missing, []);
-  assert.equal(plan.files.size, 3);
-  assert.equal(plan.particles[0].target, 'assets/eyelib/particles/12.json');
-  assert.equal(plan.particles[0].texture, 'assets/eyelib/textures/color.png');
-  assert.equal(plan.animations[0].target, `assets/eyelib/animations/${path.basename(external.animations[0].path)}`);
+  assert.equal(plan.files.size, 1);
+  assert.equal(plan.particles[0].target, 'particles/12_2.json');
+  assert.equal(plan.particles[0].texture, 'textures/color.png');
+  assert.equal(plan.animations[0].target, `animations/${path.basename(external.animations[0].path)}`);
   assert.ok(plan.rows.every(row => !row.target.includes('/imported/')));
-  assert.equal(core.applyAssetSync(project, plan), 3);
+  assert.equal(core.applyAssetSync(project, plan), 1);
   assert.deepEqual(fs.readFileSync(source), original);
   const copied = JSON.parse(fs.readFileSync(path.join(project.root, plan.particles[0].target)));
   assert.equal(copied.particle_effect.description.basic_render_parameters.texture + '.png', plan.particles[0].texture);
@@ -221,7 +221,7 @@ test('sync reports missing textures and supports an explicit PNG selection', t =
   assert.throws(() => core.applyAssetSync(project, plan), /指定可用贴图/);
   const fixed = core.planAssetSync(project, {particles: [{source, texture: path.join(external.root, 'textures/color.png')}]});
   assert.equal(fixed.missing.length, 0);
-  assert.equal(core.applyAssetSync(project, fixed), 2);
+  assert.equal(core.applyAssetSync(project, fixed), 1);
 });
 test('sync never overwrites colliding files or updates bindings on partial copy failure', t => {
   const project = projectFixture(t), external = projectFixture(t);
@@ -233,14 +233,14 @@ test('sync never overwrites colliding files or updates bindings on partial copy 
   fs.writeFileSync(path.join(project.root, target), protectedContent);
   const plan = core.planAssetSync(project, input);
   assert.notEqual(plan.particles[0].target, target);
-  assert.match(plan.particles[0].target, /^assets\/eyelib\/particles\/12_2\.json$/);
+  assert.match(plan.particles[0].target, /^particles\/12_3\.json$/);
   const racingTarget = plan.particles[0].target;
   fs.writeFileSync(path.join(project.root, racingTarget), protectedContent);
   const before = JSON.stringify(core.settings(project));
   assert.throws(() => core.applyAssetSync(project, plan), /预览后发生变化/);
   assert.equal(JSON.stringify(core.settings(project)), before);
   assert.deepEqual(fs.readFileSync(path.join(project.root, target)), protectedContent);
-  assert.ok(!fs.existsSync(path.join(project.root, plan.particles[0].texture)), 'earlier copies rolled back');
+  assert.ok(fs.existsSync(path.join(project.root, plan.particles[0].texture)), 'existing dependency remains intact');
 });
 test('sync keeps existing internal particle JSON and updates only its texture binding', t => {
   const project = projectFixture(t), external = projectFixture(t);
@@ -289,13 +289,13 @@ test('publishing in place completes the runtime graph without changing editable 
   const definition = read(manifest.effects[0]);
   const entity = read(definition.client_entity)['minecraft:client_entity'].description;
   const output = core.build(project, {generated: true});
-  const animationDoc = [...output].find(([p]) => p.startsWith('assets/eyelib/animations/'));
+  const animationDoc = [...output].find(([p]) => p.startsWith('animations/'));
   const animation = JSON.parse(animationDoc[1]).animations[entity.animations.main];
   for (const e of core.events(animation)) {
     const id = entity.particle_effects[e.effect]; assert.ok(id.startsWith('yesstevevfx:'));
-    const doc = [...output].filter(([p]) => p.startsWith('assets/eyelib/particles/')).map(([,b]) => JSON.parse(b)).find(p => p.particle_effect.description.identifier === id);
+    const doc = [...output].filter(([p]) => p.startsWith('particles/')).map(([,b]) => JSON.parse(b)).find(p => p.particle_effect.description.identifier === id);
     const tex = doc.particle_effect.description.basic_render_parameters.texture;
-    assert.ok(fs.existsSync(path.join(project.root, 'assets/eyelib/' + tex.split(':')[1] + '.png')));
+    assert.ok(fs.existsSync(path.join(project.root, tex.split(':')[1] + '.png')));
   }
   assert.deepEqual(fs.readFileSync(path.join(project.root, project.models[0].path)), modelBefore);
   assert.deepEqual(fs.readFileSync(path.join(project.root, project.animations[0].path)), animationBefore);
@@ -320,7 +320,7 @@ test('publishing retires obsolete generated names with backups but preserves edi
   effect.model = project.models[0].key; effect.texture = project.textures[0].key;
   const backupRoot = core.editBackupRoot(project.root);
   t.after(() => fs.rmSync(backupRoot, {recursive: true, force: true}));
-  const old = `assets/eyelib/animations/vfx_generated/${project.packId}/old_abcdef123456.animation.json`;
+  const old = `animations/vfx_generated/${project.packId}/old_abcdef123456.animation.json`;
   const oldBytes = Buffer.from('{"animations":{}}');
   fs.mkdirSync(path.dirname(path.join(project.root, old)), {recursive: true});
   fs.writeFileSync(path.join(project.root, old), oldBytes);

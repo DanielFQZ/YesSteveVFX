@@ -47,12 +47,22 @@ public final class YsmIntegration {
 
     static void registerFunctions(ContextBinding binding) {
         // Never overwrite another extension or a future built-in implementation.
-        for (String name : new String[]{"vfx_play", "vfx_stop", "vfx_set"}) {
+        for (String name : new String[]{"vfx_play", "vfx_stop", "vfx_set", "vfx_sound_play", "vfx_sound_stop"}) {
             if (binding.getProperty(name) != null) {
                 throw new IllegalStateException("YSM control function already registered: ctrl." + name);
             }
         }
 
+        binding.function("vfx_sound_play", fixedArity((execution, arguments) -> {
+            UUID owner=actionSource(execution, arguments, 2);
+            return owner != null && com.elfmcys.ysmvfx.audio.AudioRuntime.play(owner,
+                    arguments.getAsString(execution,0), arguments.getAsString(execution,1)) ? 1F : 0F;
+        }, 2));
+        binding.function("vfx_sound_stop", fixedArity((execution, arguments) -> {
+            UUID owner=actionSource(execution, arguments, 1);
+            return owner != null && com.elfmcys.ysmvfx.audio.AudioRuntime.stop(owner,
+                    arguments.getAsString(execution,0)) ? 1F : 0F;
+        }, 1));
         binding.function("vfx_play", fixedArity(YsmIntegration::play, 2));
         binding.function("vfx_stop", fixedArity(YsmIntegration::stop, 1));
         binding.function("vfx_set", fixedArity(YsmIntegration::set, 3));

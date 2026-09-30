@@ -95,6 +95,13 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testRuntimeOnly 'com.google.code.gson:gson:2.10.1'
+    testRuntimeOnly 'org.lwjgl:lwjgl:3.3.1'
+    testRuntimeOnly 'org.lwjgl:lwjgl-stb:3.3.1'
+    def nativeOs = System.getProperty('os.name').toLowerCase()
+    def nativePlatform = nativeOs.contains('win') ? 'windows' : nativeOs.contains('mac') ? 'macos' : 'linux'
+    if (System.getProperty('os.arch') in ['aarch64', 'arm64']) nativePlatform += '-arm64'
+    testRuntimeOnly "org.lwjgl:lwjgl:3.3.1:natives-${nativePlatform}"
+    testRuntimeOnly "org.lwjgl:lwjgl-stb:3.3.1:natives-${nativePlatform}"
 }
 
 if (ysmJarPath != null) {

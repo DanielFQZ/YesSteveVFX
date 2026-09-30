@@ -84,6 +84,29 @@ class LocalVfxAssetSourceTest {
     }
 
     @Test
+    void normalizesUnifiedRootLayoutForTheEyelibBackend() throws Exception {
+        Path packs = temp.resolve("packs");
+        Path root = packs.resolve("root_pack");
+        Files.createDirectories(root.resolve("effects"));
+        Files.createDirectories(root.resolve("entity"));
+        Files.createDirectories(root.resolve("models"));
+        Files.createDirectories(root.resolve("sounds"));
+        Files.writeString(root.resolve("manifest.json"),
+                "{\"format_version\":1,\"pack_id\":\"root_pack\",\"display_name\":\"Root\",\"effects\":[\"effects/slash.json\"]}",
+                StandardCharsets.UTF_8);
+        Files.writeString(root.resolve("effects/slash.json"), effectJson(
+                "yesstevevfx:root/slash", 20, "entity/slash.json"), StandardCharsets.UTF_8);
+        Files.writeString(root.resolve("entity/slash.json"), "{}", StandardCharsets.UTF_8);
+        Files.writeString(root.resolve("models/slash.geo.json"), "{}", StandardCharsets.UTF_8);
+
+        var bundle = new LocalVfxAssetSource(packs).load().get("yesstevevfx:root/slash");
+        assertTrue(bundle.paths().contains("assets/eyelib/entity/slash.json"));
+        assertTrue(bundle.paths().contains("assets/eyelib/models/slash.geo.json"));
+        assertTrue(!bundle.paths().contains("entity/slash.json"));
+        assertTrue(bundle.definition().clientEntity().equals("assets/eyelib/entity/slash.json"));
+    }
+
+    @Test
     void pathValidationRejectsEmptyAndParentSegments() {
         assertThrows(IllegalArgumentException.class, () -> LocalVfxAssetSource.validateRelativePath(""));
         assertThrows(IllegalArgumentException.class, () -> LocalVfxAssetSource.validateRelativePath("a/../b"));

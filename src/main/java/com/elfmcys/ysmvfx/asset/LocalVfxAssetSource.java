@@ -38,11 +38,17 @@ public final class LocalVfxAssetSource implements VfxAssetSource {
 
     @Override
     public Map<String, EffectAssetBundle> load() throws IOException {
+        return loadCatalog().effects();
+    }
+
+    @Override
+    public VfxAssetCatalog loadCatalog() throws IOException {
+        Map<String, PackAssets> packAssets = new LinkedHashMap<>();
         if (Files.isSymbolicLink(packsDirectory)) {
             throw invalid(packsDirectory, "links and paths outside the VFX root are not allowed");
         }
         if (!Files.exists(packsDirectory, LinkOption.NOFOLLOW_LINKS)) {
-            return Map.of();
+            return new VfxAssetCatalog(Map.of(), Map.of());
         }
         requireDirectory(packsDirectory);
         List<Path> packs;
@@ -66,6 +72,7 @@ public final class LocalVfxAssetSource implements VfxAssetSource {
             if (snapshotBytes > MAX_SNAPSHOT_BYTES) {
                 throw invalid(pack, "combined packs exceed the resource byte budget");
             }
+            PackAssets shared = new PackAssets(files);
             JsonObject manifest = readObject(files, "manifest.json", pack);
             checkFields(manifest, Set.of("format_version", "pack_id", "display_name", "effects"), pack);
             requireVersion(manifest, pack);
@@ -76,6 +83,7 @@ public final class LocalVfxAssetSource implements VfxAssetSource {
             if (!packIds.add(packId)) {
                 throw invalid(pack, "duplicate pack_id: " + packId);
             }
+            packAssets.put(packId, shared);
             if (manifest.has("display_name")) {
                 string(manifest, "display_name", pack);
             }
@@ -95,6 +103,7 @@ public final class LocalVfxAssetSource implements VfxAssetSource {
                 }
                 Path diagnosticPath = pack.resolve(effectPath);
                 JsonObject json = readObject(files, effectPath, pack);
+                normalizeEffectReferences(json);
                 checkFields(json, Set.of("format_version", "id", "duration_ticks", "client_entity"), diagnosticPath);
                 requireVersion(json, diagnosticPath);
                 EffectDefinition definition;
@@ -118,10 +127,10 @@ public final class LocalVfxAssetSource implements VfxAssetSource {
                 if (effects.size() >= MAX_EFFECTS) {
                     throw invalid(diagnosticPath, "too many effects (maximum " + MAX_EFFECTS + ")");
                 }
-                effects.put(definition.id(), new EffectAssetBundle(definition, files));
+                effects.put(definition.id(), new EffectAssetBundle(definition, shared));
             }
         }
-        return Collections.unmodifiableMap(effects);
+        return new VfxAssetCatalog(effects, packAssets);
     }
 
     private static Map<String, byte[]> readPack(Path pack) throws IOException {
@@ -166,7 +175,86 @@ public final class LocalVfxAssetSource implements VfxAssetSource {
             }
             files.put(relative, bytes);
         }
-        return Collections.unmodifiableMap(files);
+        return Collections.unmodifiableMap(normalizeFiles(files, pack));
+    }
+
+    /**
+     * The editable VFX layout keeps model, animation, particle, texture and
+     * sound directories at the pack root.  The old layout used the two
+     * resource-pack namespaces under assets/.  Normalize both layouts before
+     * the runtime backends see the snapshot, so eyelib keeps its existing
+     * registry contract and old packs remain loadable.
+     */
+    private static Map<String, byte[]> normalizeFiles(Map<String, byte[]> source, Path pack) throws IOException {
+        Map<String, byte[]> normalized = new LinkedHashMap<>();
+        for (Map.Entry<String, byte[]> entry : source.entrySet()) {
+            String target = normalizeResourcePath(entry.getKey());
+            byte[] previous = normalized.putIfAbsent(target, entry.getValue());
+            if (previous != null && !java.util.Arrays.equals(previous, entry.getValue())) {
+                throw invalid(pack, "duplicate resources after layout normalization: " + target);
+            }
+        }
+        // Rewrite metadata paths only.  Bedrock JSON uses resource identifiers
+        // for model/texture/particle references, which must stay untouched.
+        for (Map.Entry<String, byte[]> entry : new LinkedHashMap<>(normalized).entrySet()) {
+            String path = entry.getKey();
+            if (path.startsWith("effects/") && path.endsWith(".json")) {
+                JsonObject json = parseNormalizedObject(entry.getValue(), pack.resolve(path));
+                normalizeEffectReferences(json);
+                normalized.put(path, jsonBytes(json));
+            } else if (path.equals("audio.json")) {
+                JsonObject json = parseNormalizedObject(entry.getValue(), pack.resolve(path));
+                normalizeAudioReferences(json);
+                normalized.put(path, jsonBytes(json));
+            }
+        }
+        return normalized;
+    }
+
+    private static String normalizeResourcePath(String path) {
+        if (path.startsWith("assets/eyelib/") || path.startsWith("assets/yesstevevfx/")) return path;
+        String[] categories = {"models", "animations", "animation_controllers", "render_controllers", "particles", "textures", "entity"};
+        for (String category : categories) {
+            String prefix = category + "/";
+            if (path.startsWith(prefix)) return "assets/eyelib/" + path;
+        }
+        if (path.startsWith("sounds/")) return "assets/yesstevevfx/" + path;
+        return path;
+    }
+
+    private static void normalizeEffectReferences(JsonObject json) {
+        JsonElement entity = json.get("client_entity");
+        if (entity != null && entity.isJsonPrimitive() && entity.getAsJsonPrimitive().isString()) {
+            json.addProperty("client_entity", normalizeResourcePath(entity.getAsString()));
+        }
+    }
+
+    private static void normalizeAudioReferences(JsonObject json) {
+        JsonElement sounds = json.get("sounds");
+        if (sounds == null || !sounds.isJsonObject()) return;
+        for (Map.Entry<String, JsonElement> sound : sounds.getAsJsonObject().entrySet()) {
+            JsonElement value = sound.getValue();
+            if (!value.isJsonObject()) continue;
+            JsonElement file = value.getAsJsonObject().get("file");
+            if (file != null && file.isJsonPrimitive() && file.getAsJsonPrimitive().isString()) {
+                value.getAsJsonObject().addProperty("file", normalizeResourcePath(file.getAsString()));
+            }
+        }
+    }
+
+    private static JsonObject parseNormalizedObject(byte[] bytes, Path path) throws IOException {
+        if (bytes.length > MAX_JSON_BYTES) throw invalid(path, "metadata JSON exceeds " + MAX_JSON_BYTES + " bytes");
+        try {
+            JsonElement parsed = JsonParser.parseString(new String(bytes, StandardCharsets.UTF_8));
+            if (!parsed.isJsonObject()) throw invalid(path, "expected a JSON object");
+            return parsed.getAsJsonObject();
+        } catch (JsonParseException e) {
+            throw new IOException(path + ": invalid JSON", e);
+        }
+    }
+
+    private static byte[] jsonBytes(JsonObject json) {
+        return (json.toString() + "\n").getBytes(StandardCharsets.UTF_8);
     }
 
     private static JsonObject readObject(Map<String, byte[]> files, String relative, Path pack) throws IOException {
@@ -225,7 +313,7 @@ public final class LocalVfxAssetSource implements VfxAssetSource {
         }
     }
 
-    static void validateRelativePath(String path) {
+    public static void validateRelativePath(String path) {
         Objects.requireNonNull(path, "path");
         if (path.isBlank() || path.length() > 512 || path.indexOf('\\') >= 0 || path.indexOf(':') >= 0) {
             throw new IllegalArgumentException("Resource path must be a relative slash-separated path");

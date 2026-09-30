@@ -2,7 +2,7 @@
 
 YesSteveVFX 是面向 Forge 1.20.1 的客户端特效运行时。一个 effect 由 Bedrock 模型、动画、render controller、纹理和粒子资源组成；YesSteveVFX 管理配置、实例生命周期和 carrier，eyelib 负责实际的 Bedrock 模型、动画和粒子渲染，YSM 只负责通过 Molang 指令帧控制播放。当前构件支持 Forge 1.20.1 的 47.0.0 至 47.x 版本。
 
-当前工作版本为 `1.0.0-pre.2-audio.1` 音效测试版。视觉特效需要 Forge 1.20.1、eyelib；YSM 动画控制还需要 YSM。新音效模块使用 Minecraft 原版声音系统，支持单声道 OGG 短音效、位置/跟随播放、Molang 控制，以及 Blockbench 音效管理。纯音效包不要求 eyelib。
+当前工作版本为 `1.0.0-pre.2-audio.2` 音效测试版。视觉特效需要 Forge 1.20.1、eyelib；YSM 动画控制还需要 YSM。新音效模块使用 Minecraft 原版声音系统，支持单声道 OGG 短音效、位置/跟随播放、Molang 控制，以及 Blockbench 音效管理。纯音效包不要求 eyelib。
 
 音效配置与测试步骤见 [音效使用说明](docs/AUDIO-USER-GUIDE.md)。DanielFQZ 的 YSS fork 已加入 `YssHitResolvedEvent`，VFX 会在检测到该事件时启用可选命中音效桥；上游 PR 是否合并不影响没有 YSS 时的普通音效功能。
 
@@ -28,14 +28,14 @@ VFX carrier 是客户端本地的无碰撞 ArmorStand，不参与游戏逻辑，
 config/yesstevevfx/packs/<pack_id>/
 ├── manifest.json
 ├── effects/<effect>.json
-└── assets/eyelib/
-    ├── entity/*.json
-    ├── models/*.json
-    ├── animations/*.json
-    ├── animation_controllers/*.json
-    ├── render_controllers/*.json
-    ├── particles/*.json
-    └── textures/*
+├── entity/*.json
+├── models/*.json
+├── animations/*.json
+├── animation_controllers/*.json
+├── render_controllers/*.json
+├── particles/*.json
+├── textures/*
+└── sounds/*.ogg                 # 可选，音效包
 ```
 
 最小 manifest 和 effect 定义：
@@ -54,9 +54,12 @@ config/yesstevevfx/packs/<pack_id>/
   "format_version": 1,
   "id": "yesstevevfx:demo",
   "duration_ticks": 60,
-  "client_entity": "assets/eyelib/entity/demo.json"
+  "client_entity": "entity/demo.json"
 }
 ```
+
+新包默认使用根目录分类结构。旧版本的 `assets/eyelib/...` 和
+`assets/yesstevevfx/...` 结构仍可直接加载；运行时会在内存中规范化，不需要手动搬运资源。
 
 可直接复制仓库中的 [examples/demo](examples/demo) 到 `config/yesstevevfx/packs/demo` 进行测试。加载器会在发布前完整读取和校验资源，并拒绝未知字段、路径穿越、符号链接、重复 ID 以及超出大小预算的资源。
 
@@ -96,7 +99,7 @@ ctrl.vfx_set("main", "scale", 1.25)
 
 函数只接受客户端真实实体的动画上下文，不接受预览实体、fake player 或没有 `allowEmitting()` 权限的上下文。YSM bridge 不保存 YSM Entity、Molang Context 或 AST 引用。
 
-`audio.json` 的 `hit_bindings` 由 YSS 服务端确认事件驱动：需要服务端和客户端都安装带事件的 YSS，以及双方的 VFX。VFX 服务端只转发 model ID、动画名、段下标和目标位置，客户端使用自己加载的音效表匹配播放；没有匹配绑定时静默跳过。
+`audio.json` 的 `hit_bindings` 由 YSS 服务端确认事件驱动：需要服务端和客户端都安装带事件的 YSS，以及双方的 VFX。这里的 model ID 来自 YSM 当前模型的公开 `displayPath`，YSS 只负责读取该模型的攻击判定并转发事件；VFX 服务端只转发模型 ID、动画名、段下标和目标位置，客户端使用自己加载的音效表匹配播放；没有匹配绑定时静默跳过。
 
 ## 本地手动测试命令
 

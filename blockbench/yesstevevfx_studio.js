@@ -68,7 +68,7 @@
       assets: [], models: [], animations: [], particles: [], textures: [], effects: [], warnings: []};
     const documents = new Map();
     for (const rel of filesIn(root)) {
-      if (rel === 'vfx-project.json' || (fs.existsSync(path.join(root, 'vfx-project.json')) && /^(assets\/eyelib\/[^/]+|effects)\/vfx_generated\//.test(rel))) continue;
+      if (rel === 'vfx-project.json' || (fs.existsSync(path.join(root, 'vfx-project.json')) && /^(?:models|animations|particles|textures|entity|render_controllers|assets\/eyelib\/[^/]+|effects)\/vfx_generated\//.test(rel))) continue;
       const asset = {path: rel, type: '其他'};
       project.assets.push(asset);
       if (/\.png$/i.test(rel)) { project.textures.push({key: rel, path: rel}); asset.type = '贴图'; continue; }
@@ -106,7 +106,7 @@
     if (manifest) {
       const seenGeometry = new Map();
       project.models = project.models.filter(model => {
-        if (!model.path.startsWith('assets/eyelib/models/') || !/^geometry\.yesstevevfx\./.test(model.id)) return true;
+        if (!(model.path.startsWith('models/') || model.path.startsWith('assets/eyelib/models/')) || !/^geometry\.yesstevevfx\./.test(model.id)) return true;
         const normalized = clone(model.geometry);
         if (normalized.description) normalized.description.identifier = '';
         const signature = JSON.stringify(normalized);
@@ -184,6 +184,7 @@
         }
       }
     }
+    project.audio = documents.get('audio.json') || {format_version: 1, sounds: {}, hit_bindings: []};
     return project;
   }
   const stableAlias = key => 'vfx_' + hash(key);
@@ -202,6 +203,15 @@
     }
     stem = stem.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[-._]+|[-._]+$/g, '');
     return (stem.match(/[A-Za-z0-9]/) ? stem : fallback).slice(0, 96).toLowerCase();
+  }
+  // Runtime package paths may contain UTF-8 file names (for example Chinese
+  // sound names), but must remain relative and free of traversal/namespace
+  // syntax. Generated identifiers are still ASCII and validated separately.
+  function isSafeResourcePath(value) {
+    return typeof value === 'string' && value.length > 0 && value.length <= 512 &&
+      !value.includes('\\') && !value.includes(':') && !value.includes('\0') &&
+      !value.split('/').some(part => !part || part === '.' || part === '..') &&
+      !/[\u0000-\u001f\u007f]/.test(value);
   }
   function eventParticle(project, effect, event) {
     const bound = effect.eventBindings?.[event.key];
@@ -241,10 +251,13 @@
       const effects = project.effects.filter(e => e.model === model.key);
       const filePaths = [...new Set(effects.map(e => project.animations.find(a => a.key === e.animation)?.path).filter(Boolean))];
       const animations = project.animations.filter(a => filePaths.includes(a.path));
+      const animationNames = new Set(animations.map(a => a.id));
+      const hitBindings = (project.audio?.hit_bindings || []).filter(binding => animationNames.has(binding.animation));
       return {key: model.key, model, effects, filePaths, animations,
         files: filePaths.map(path => ({path, count: animations.filter(a => a.path === path).length})),
         particles: new Set(effects.flatMap(e => events(project.animations.find(a => a.key === e.animation)?.animation)
           .map(event => eventParticle(project, e, event)).filter(Boolean))).size,
+        hitBindings,
         bones: model.geometry.bones?.length || 0,
         cubes: (model.geometry.bones || []).reduce((n, bone) => n + (bone.cubes?.length || 0), 0)};
     });
@@ -252,7 +265,9 @@
     if (particleOnly.length) {
       const filePaths = [...new Set(particleOnly.map(e => project.animations.find(a => a.key === e.animation)?.path).filter(Boolean))];
       const animations = project.animations.filter(a => filePaths.includes(a.path));
-      views.push({key: '', model: null, effects: particleOnly, files: filePaths.map(path => ({path, count: animations.filter(a => a.path === path).length})), animations, bones: 0, cubes: 0});
+      const animationNames = new Set(animations.map(a => a.id));
+      views.push({key: '', model: null, effects: particleOnly, files: filePaths.map(path => ({path, count: animations.filter(a => a.path === path).length})), animations,
+        hitBindings: (project.audio?.hit_bindings || []).filter(binding => animationNames.has(binding.animation)), bones: 0, cubes: 0});
     }
     return views;
   }
@@ -266,8 +281,12 @@
       bindings: {}, eventBindings: {}};
   }
   function settings(project) {
-    return {version: 2, packId: project.packId, displayName: project.displayName, effects: clone(project.effects),
+    return {version: 2, packId: project.packId, displayName: project.displayName, effects: audioOnlyProject(project) ? [] : clone(project.effects),
       particleTextures: Object.fromEntries(project.particles.map(p => [p.key, p.texture]))};
+  }
+  function audioOnlyProject(project) {
+    return Object.keys(project.audio?.sounds || {}).length > 0 &&
+      project.models.length === 0 && project.animations.length === 0 && project.particles.length === 0;
   }
   function find(items, key, label) {
     const item = items.find(item => item.key === key);
@@ -278,8 +297,9 @@
     const errors = [];
     const names = new Set();
     if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(project.packId)) errors.push('包 ID 必须是 1–64 位小写字母、数字、点、横线或下划线，并以字母/数字开头');
-    const effects = onlyEffect ? [onlyEffect] : project.effects.filter(e => e.enabled);
-    if (!effects.length && !options.allowEmpty) errors.push('至少启用一个特效');
+    const audioOnly = !onlyEffect && audioOnlyProject(project);
+    const effects = audioOnly ? [] : (onlyEffect ? [onlyEffect] : project.effects.filter(e => e.enabled));
+    if (!effects.length && !Object.keys(project.audio?.sounds || {}).length && !options.allowEmpty) errors.push('至少启用一个特效');
     for (const effect of effects) {
       try {
         if (!/^[a-z0-9][a-z0-9._-]{0,95}$/.test(effect.name)) throw new Error('特效名必须是合法 ASCII ID');
@@ -342,7 +362,7 @@
     function putTexture(key) {
       const texture = find(project.textures, key, '贴图');
       const name = runtimeName('textures', key, 'texture');
-      out.set(`assets/eyelib/textures/${resourcePack}/${name}.png`, fs.readFileSync(fileAt(project.root, texture.path)));
+      out.set(`textures/${resourcePack}/${name}.png`, fs.readFileSync(fileAt(project.root, texture.path)));
       return textureId(key);
     }
     // A source geometry is shared by all effects that reference the same
@@ -359,7 +379,7 @@
       const stem = runtimeName('models', effect.model || '__empty__', effect.model ? 'model' : 'empty');
       const base = `${options.generated ? 'vfx_generated.' : ''}${pack}.${stem}`;
       geometry.description.identifier = `geometry.yesstevevfx.${base}`;
-      const file = `assets/eyelib/models/${resourcePack}/${stem}.geo.json`;
+      const file = `models/${resourcePack}/${stem}.geo.json`;
       json(file, {format_version: '1.12.0', 'minecraft:geometry': [geometry]});
       const resource = {id: geometry.description.identifier, file};
       geometryResources.set(sourceKey, resource);
@@ -371,12 +391,12 @@
       const existing = animationResources.get(sourceKey);
       if (existing) return existing;
       const stem = runtimeName('models', effect.model || '__empty__', effect.model ? 'model' : 'empty');
-      const resource = {file: `assets/eyelib/animations/${resourcePack}/${stem}.animation.json`, animations: {}};
+      const resource = {file: `animations/${resourcePack}/${stem}.animation.json`, animations: {}};
       animationResources.set(sourceKey, resource);
       return resource;
     }
     const effectPaths = [];
-    for (const effect of project.effects.filter(e => e.enabled)) {
+    for (const effect of (audioOnlyProject(project) ? [] : project.effects.filter(e => e.enabled))) {
       const base = `${options.generated ? 'vfx_generated.' : ''}${pack}.${effect.name}`;
       const geometry = geometryResource(effect);
       const entity = {identifier: `yesstevevfx:${resourcePack}/${effect.name}`, materials: {default: 'entity_alphatest'},
@@ -386,7 +406,7 @@
       else {
         const key = `textures/${resourcePack}/empty`;
         entity.textures.default = `yesstevevfx:${key}`;
-        out.set(`assets/eyelib/${key}.png`, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64'));
+        out.set(`${key}.png`, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64'));
       }
       if (effect.animation) {
         const animation = clone(find(project.animations, effect.animation, '动画').animation);
@@ -399,16 +419,16 @@
           const doc = clone(particle.json);
           doc.particle_effect.description.identifier = particleId(particle.key);
           doc.particle_effect.description.basic_render_parameters.texture = putTexture(particle.texture);
-          json(`assets/eyelib/particles/${resourcePack}/${particleName}.json`, doc);
+          json(`particles/${resourcePack}/${particleName}.json`, doc);
         }
         const id = `animation.yesstevevfx.${base}`;
         const animations = animationResource(effect);
         animations.animations[id] = animation;
         entity.animations = {main: id}; entity.scripts = {animate: ['main']};
       }
-      const entityPath = `assets/eyelib/entity/${resourcePack}/${effect.name}.json`;
+      const entityPath = `entity/${resourcePack}/${effect.name}.json`;
       json(entityPath, {'minecraft:client_entity': {description: entity}});
-      json(`assets/eyelib/render_controllers/${resourcePack}/${effect.name}.json`, {render_controllers: {
+      json(`render_controllers/${resourcePack}/${effect.name}.json`, {render_controllers: {
         [entity.render_controllers[0]]: {geometry: 'Geometry.default', materials: ['Material.default'], textures: ['Texture.default']}
       }});
       const effectPath = `effects/${options.generated ? 'vfx_generated/' : ''}${effect.name}.json`;
@@ -418,10 +438,15 @@
     for (const resource of animationResources.values()) {
       json(resource.file, {format_version: '1.8.0', animations: resource.animations});
     }
+    const audio = audioDocument(project);
+    if (Object.keys(audio.sounds).length || audio.hit_bindings.length) {
+      json('audio.json', audio);
+      for (const def of Object.values(audio.sounds)) out.set(def.file, fs.readFileSync(fileAt(project.root, def.file)));
+    }
     json('manifest.json', {format_version: 1, pack_id: pack, display_name: project.displayName || pack, effects: effectPaths});
     if (out.size > 4096 || [...out.values()].reduce((n, b) => n + b.length, 0) > 128 * 1024 * 1024) throw new Error('导出包超过 VFX 的资源大小限制');
     for (const [name, bytes] of out) {
-      if (!/^[a-z0-9._/-]+$/.test(name) || bytes.length > 16 * 1024 * 1024) throw new Error(`导出资源路径或大小不合法：${name}`);
+      if (!isSafeResourcePath(name) || bytes.length > 16 * 1024 * 1024) throw new Error(`导出资源路径或大小不合法：${name}`);
     }
     return out;
   }
@@ -443,6 +468,7 @@
     // second time. Only retire generated files owned by this pack, never sources.
     const obsolete = [...all.keys()].filter(file => !sources.has(file) && !output.has(file) &&
       ['models', 'animations', 'particles', 'textures', 'entity', 'render_controllers'].some(kind =>
+        file.startsWith(`${kind}/vfx_generated/${project.packId}/`) ||
         file.startsWith(`assets/eyelib/${kind}/vfx_generated/${project.packId}/`)));
     for (const file of obsolete) all.delete(file);
     for (const [file, bytes] of output) all.set(file, bytes.length);
@@ -514,9 +540,8 @@
     const root = path.join(parent, packId);
     if (fs.existsSync(root)) throw new Error(`目标目录已存在：${root}`);
     fs.mkdirSync(root, {recursive: true});
-    for (const dir of ['effects', 'assets/eyelib/models', 'assets/eyelib/animations',
-      'assets/eyelib/particles', 'assets/eyelib/entity', 'assets/eyelib/render_controllers',
-      'assets/eyelib/textures']) fs.mkdirSync(path.join(root, dir), {recursive: true});
+    for (const dir of ['effects', 'models', 'animations', 'particles', 'entity', 'render_controllers',
+      'textures', 'sounds']) fs.mkdirSync(path.join(root, dir), {recursive: true});
     fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify({
       format_version: 1, pack_id: packId, display_name: displayName, effects: []
     }, null, 2) + '\n');
@@ -589,7 +614,7 @@
     function put(source, bytes, kind, extension, name, canonicalize = (_target, raw) => raw, allowEmpty = false) {
       if (bytes.length > 16 * 1024 * 1024 || (!bytes.length && !allowEmpty)) throw new Error('资产为空或超过 16 MiB：' + source);
       if (kind === 'textures' && !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error('贴图必须为 PNG：' + source);
-      const base = `assets/eyelib/${kind}/${cleanAssetName(name || source, extension)}`;
+      const base = `${kind}/${cleanAssetName(name || source, extension)}`;
       let target = base, index = 2;
       while (true) {
         const canonical = canonicalize(target, bytes);
@@ -603,7 +628,7 @@
           return target;
         }
         const suffix = `_${index++}`;
-        target = `assets/eyelib/${kind}/${path.basename(base, extension)}${suffix}${extension}`;
+        target = `${kind}/${path.basename(base, extension)}${suffix}${extension}`;
       }
     }
     const textures = new Map();
@@ -746,7 +771,99 @@
     const quote = value => String(value).replaceAll('\\', '\\\\').replaceAll("'", "\\'");
     return `ctrl.vfx_play('${quote(project.packId)}:${quote(effect.name)}', '${quote(slot)}');`;
   }
-  const Core = {scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath, molang};
+  function inspectOgg(bytes) {
+    if (!Buffer.isBuffer(bytes) || bytes.length > 4 * 1024 * 1024) throw new Error('OGG 文件不能超过 4 MiB');
+    let pos = 0, serial, seq = 0, ended = false, rate = 0, last = 0n;
+    while (pos < bytes.length) {
+      if (ended || pos + 27 > bytes.length || bytes.toString('ascii', pos, pos + 4) !== 'OggS' || bytes[pos + 4] !== 0) throw new Error('OGG 文件损坏或不完整');
+      const flags = bytes[pos + 5], segments = bytes[pos + 26];
+      if (pos + 27 + segments > bytes.length) throw new Error('OGG 分段表不完整');
+      let size = 27 + segments;
+      for (let i = 0; i < segments; i++) size += bytes[pos + 27 + i];
+      if (pos + size > bytes.length) throw new Error('OGG 数据不完整');
+      const stream = bytes.readUInt32LE(pos + 14);
+      if (pos === 0) {
+        serial = stream;
+        const at = pos + 27 + segments;
+        if (!(flags & 2) || at + 16 > pos + size || bytes[at] !== 1 || bytes.toString('ascii', at + 1, at + 7) !== 'vorbis') throw new Error('仅支持 OGG Vorbis 编码');
+        if (bytes[at + 11] !== 1) throw new Error('位置音效需要单声道，请先将立体声音频转换为单声道');
+        rate = bytes.readUInt32LE(at + 12);
+        if (rate < 8000 || rate > 96000) throw new Error('采样率需要在 8000–96000 Hz 之间');
+      }
+      if (serial !== stream || bytes.readUInt32LE(pos + 18) !== seq++) throw new Error('不支持拼接的 OGG 音轨');
+      let crc = 0;
+      for (let i = 0; i < size; i++) {
+        crc ^= ((i >= 22 && i < 26) ? 0 : bytes[pos + i]) << 24;
+        for (let bit = 0; bit < 8; bit++) crc = (crc << 1) ^ (crc < 0 ? 0x04c11db7 : 0);
+      }
+      if ((crc >>> 0) !== bytes.readUInt32LE(pos + 22)) throw new Error('OGG 校验和错误');
+      const granule = bytes.readBigInt64LE(pos + 6); if (granule >= 0n) last = granule;
+      ended = !!(flags & 4); pos += size;
+    }
+    if (!ended || !rate || last <= 0n) throw new Error('OGG 缺少有效结束标记');
+    const duration = Number(last) / rate;
+    if (duration > 10) throw new Error('短音效不能超过 10 秒');
+    return {duration, rate};
+  }
+  function audioDocument(project) {
+    const audio = clone(project.audio || {format_version: 1, sounds: {}, hit_bindings: []});
+    const fields = (object, allowed) => {
+      if (!object || typeof object !== 'object' || Array.isArray(object)) throw new Error('音效配置需要是对象');
+      for (const key of Object.keys(object)) if (!allowed.includes(key)) throw new Error('未知音效字段：' + key);
+    };
+    fields(audio, ['format_version', 'sounds', 'hit_bindings']);
+    if (audio.format_version !== 1 || !audio.sounds || typeof audio.sounds !== 'object' || Array.isArray(audio.sounds)) throw new Error('audio.json 格式错误');
+    if (audio.hit_bindings === undefined) audio.hit_bindings = [];
+    if (!Array.isArray(audio.hit_bindings)) throw new Error('命中绑定需要是数组');
+    if (Object.keys(audio.sounds).length > 1024 || audio.hit_bindings.length > 4096) throw new Error('音效或命中绑定数量超限');
+    for (const [id, def] of Object.entries(audio.sounds)) {
+      fields(def, ['file', 'volume', 'pitch', 'range', 'follow']);
+      if (!/^yesstevevfx:[a-z0-9_./-]+$/.test(id) || id.includes('..') || id.includes('//') || id.endsWith('/') || id.startsWith('yesstevevfx:/')) throw new Error('音效 ID 不合法：' + id);
+      if (typeof def.file !== 'string' || !isSafeResourcePath(def.file) ||
+          !(def.file.startsWith('sounds/') || def.file.startsWith('assets/yesstevevfx/sounds/')) ||
+          !def.file.endsWith('.ogg')) throw new Error('音效需要位于 sounds/*.ogg');
+      inspectOgg(fs.readFileSync(fileAt(project.root, def.file)));
+      for (const [field, fallback, min, max] of [['volume', 1, 0, 1], ['pitch', 1, .5, 2], ['range', 24, 1, 64]]) {
+        if (def[field] === undefined) def[field] = fallback;
+        if (typeof def[field] !== 'number' || !Number.isFinite(def[field]) || def[field] < min || def[field] > max) throw new Error(`${id}：${field} 必须为 ${min}–${max}`);
+      }
+      if (def.follow === undefined) def.follow = false;
+      if (typeof def.follow !== 'boolean') throw new Error('follow 必须为布尔值');
+    }
+    const selectors = new Set();
+    for (const h of audio.hit_bindings) {
+      fields(h, ['model_id', 'animation', 'segment_index', 'sound']);
+      if (![h.model_id, h.animation, h.sound].every(s => typeof s === 'string' && s.trim() && s.length <= 512) || !Number.isInteger(h.segment_index) || h.segment_index < 0 || h.segment_index > 65535 || !audio.sounds[h.sound]) throw new Error('命中绑定需要模型 ID、动画名、有效段下标和包内音效');
+      const key = JSON.stringify([h.model_id, h.animation, h.segment_index]);
+      if (selectors.has(key)) throw new Error('同一模型/动画/判定段不能重复绑定音效'); selectors.add(key);
+    }
+    return audio;
+  }
+  function saveAudio(project) {
+    const audio = audioDocument(project);
+    const target = path.join(project.root, 'audio.json');
+    if (fs.existsSync(target)) {
+      const backup = path.join(editBackupRoot(project.root), `audio-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.json`);
+      fs.mkdirSync(path.dirname(backup), {recursive: true}); fs.copyFileSync(target, backup);
+    }
+    fs.writeFileSync(target + '.tmp', JSON.stringify(audio, null, 2) + '\n');
+    fs.renameSync(target + '.tmp', target); project.audio = audio;
+  }
+  function importAudio(project, source) {
+    const bytes = fs.readFileSync(source); inspectOgg(bytes);
+    const stem = path.basename(source, path.extname(source)).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') || 'sound';
+    let rel = `sounds/${stem}.ogg`;
+    for (let n = 2; fs.existsSync(fileAt(project.root, rel)) && !fs.readFileSync(fileAt(project.root, rel)).equals(bytes); n++) rel = `sounds/${stem}_${n}.ogg`;
+    const idStem = stem.toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/^_+|_+$/g, '') || 'sound';
+    const base = `yesstevevfx:${project.packId}/${idStem}`;
+    const candidate = {...project, audio: clone(project.audio || {format_version: 1, sounds: {}, hit_bindings: []})};
+    let id = base; for (let n = 2; candidate.audio.sounds[id]; n++) id = `${base}_${n}`;
+    fs.mkdirSync(path.dirname(fileAt(project.root, rel)), {recursive: true});
+    if (!fs.existsSync(fileAt(project.root, rel))) fs.writeFileSync(fileAt(project.root, rel), bytes, {flag: 'wx'});
+    candidate.audio.sounds[id] = {file: rel, volume: 1, pitch: 1, range: 24, follow: false};
+    saveAudio(candidate); project.audio = candidate.audio; return id;
+  }
+  const Core = {inspectOgg, audioDocument, saveAudio, importAudio, scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath, molang};
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
@@ -853,7 +970,7 @@
         data: {rows: plan.rows, root: studio.root, model: !!context.session.model, modelTexture: context.defaultTexture,
           textures: Texture.all.map(t => ({id: t.uuid, name: t.name, path: t.path || '尚未保存的贴图'}))},
         template: `<div class="vfx-studio vfx-sync"><p class="vfx-path">目标特效包：{{root}}</p>
-          <p>复制当前标签引用的粒子、贴图和外部动画，保留外部原文件。外部资产默认写入 <code>assets/eyelib/particles</code>、<code>assets/eyelib/textures</code> 和 <code>assets/eyelib/animations</code>；相同内容可复用，同名不同内容会使用 <code>_2</code>、<code>_3</code> 等数字后缀。</p>
+          <p>复制当前标签引用的粒子、贴图和外部动画，保留外部原文件。外部资产默认写入 <code>particles</code>、<code>textures</code> 和 <code>animations</code>；相同内容可复用，同名不同内容会使用 <code>_2</code>、<code>_3</code> 等数字后缀。旧包仍可继续编辑。</p>
           <label v-if="model && textures.length">此模型使用的贴图 <select v-model="modelTexture"><option v-for="t in textures" :key="t.id" :value="t.id">{{t.name}} · {{t.path}}</option></select></label>
           <div class="vfx-sync-files"><table><thead><tr><th>源资产</th><th>包内位置</th><th>处理方式</th></tr></thead><tbody><tr v-for="(r, i) in rows" :key="i"><td>{{r.source}}</td><td>{{r.target}}</td><td>{{r.status}}</td></tr></tbody></table></div>
           <p>完成后请保存动画，让新的粒子引用写回源文件，再导出到客户端。复制出的 PNG 包含当前绘制结果。</p></div>`
@@ -1045,6 +1162,7 @@
                 <dt>特效</dt><dd>{{v.effects.map(e => e.name).join('、') || '尚未关联'}}</dd>
                 <dt>动画文件</dt><dd><div class="vfx-model-file" v-for="f in v.files" :key="f.path"><span>{{f.path}}</span><span class="vfx-model-count">{{f.count}} 个动画</span></div><span v-if="!v.files.length">尚未关联</span></dd>
                 <dt v-if="v.model">粒子</dt><dd v-if="v.model">{{v.particles || 0}} 个已绑定</dd>
+                <dt>音效</dt><dd><template v-if="v.hitBindings.length"><span v-for="(h,i) in v.hitBindings" :key="i" class="vfx-model-audio-row"><code>{{h.sound}}</code><small>· {{h.animation}} · 第 {{h.segment_index + 1}} 段 · YSM: {{h.model_id}}</small></span></template><span v-else>暂无 YSM 命中绑定（Molang 音效在动画指令帧中配置）</span></dd>
               </dl>
               <details class="vfx-model-animations" v-if="v.animations.length"><summary>查看动画名称（{{v.animations.length}}）</summary><ul><li v-for="a in v.animations" :key="a.key">{{a.id}}</li></ul></details>
               <p class="vfx-model-hint" v-if="!v.effects.length">先关联动画与贴图，再打开模型进行编辑。</p>
@@ -1382,6 +1500,76 @@
       }
     }).show();
   }
+  let audioPreview = null, audioPreviewUrl = null, audioDialog = null;
+  function stopAudioPreview() {
+    if (audioPreview) audioPreview.pause(); audioPreview = null;
+    if (audioPreviewUrl) URL.revokeObjectURL(audioPreviewUrl); audioPreviewUrl = null;
+  }
+  function showAudio() {
+    if (!studio) throw new Error('请先导入或新建特效包');
+    const project = studio;
+    const rows = Object.entries(project.audio?.sounds || {}).map(([id, def]) => ({id, ...def}));
+    const hits = clone(project.audio?.hit_bindings || []);
+    function applyRows() {
+      const sounds = {};
+      for (const {id, ...def} of rows) {
+        if (sounds[id]) throw new Error('音效 ID 重复：' + id); sounds[id] = def;
+      }
+      const candidate = {...project, audio: {format_version: 1, sounds, hit_bindings: hits}};
+      saveAudio(candidate); project.audio = candidate.audio;
+    }
+    audioDialog?.delete();
+    audioDialog = new Dialog({id: 'yesstevevfx_audio', title: 'VFX · 音效', width: 960, singleButton: true,
+      onConfirm() { stopAudioPreview(); },
+      onCancel() { stopAudioPreview(); },
+      component: {data: {rows, hits, message: '修改后点击保存。命中绑定会写入 audio.json，并由安装了新版本 YSS 与 VFX 的服务端广播。'}, computed: {
+        animations() { return [...new Set(project.animations.map(a => a.id).filter(Boolean))]; }
+      }, methods: {
+        save() { guard(() => { applyRows(); this.message = 'audio.json 已保存。游戏内执行 /vfx_client reload。'; }); },
+        add() {
+          guard(() => { applyRows();
+          Blockbench.import({extensions: ['ogg'], type: 'OGG Vorbis', multiple: true, readtype: 'binary', startpath: recentPath('audio_import')}, files => guard(() => {
+            for (const file of files) { importAudio(project, file.path); rememberPath('audio_import', path.dirname(file.path)); }
+            stopAudioPreview(); audioDialog.hide(); showAudio();
+          })); });
+        },
+        remove(i) { rows.splice(i, 1); this.message = '已从列表移除，保存后生效；原音频文件保留。'; },
+        preview(r) { guard(() => {
+          stopAudioPreview();
+          audioPreviewUrl = URL.createObjectURL(new Blob([fs.readFileSync(fileAt(project.root, r.file))], {type: 'audio/ogg'}));
+          audioPreview = new Audio(audioPreviewUrl); audioPreview.volume = Math.max(0, Math.min(1, r.volume)); audioPreview.playbackRate = r.pitch;
+          audioPreview.play().catch(errorBox);
+        }); },
+        stopPreview() { stopAudioPreview(); },
+        script(r) { return `ctrl.vfx_sound_play('${r.id}', 'swing');`; },
+        copy(r, stop) { guard(() => {
+          applyRows();
+          const text = stop ? "ctrl.vfx_sound_stop('swing');" : this.script(r);
+          if (typeof Clipbench !== 'undefined' && Clipbench.setText) Clipbench.setText(text); else navigator.clipboard.writeText(text);
+          Blockbench.showQuickMessage('Molang 已复制，粘贴到 YSM 动画指令帧。', 2500);
+        }); },
+        addHit() { hits.push({model_id: '', animation: '', segment_index: 0, sound: rows[0]?.id || ''}); }
+      }, template: `<div class="vfx-studio vfx-audio">
+        <div class="vfx-toolbar"><button @click="add">导入 OGG</button><button @click="save">保存音效配置</button><button @click="stopPreview">停止试听</button></div>
+          <p>单声道 OGG Vorbis，最长 10 秒。技能演出/挥刀音效推荐复制 Molang 到 YSM 动画指令帧；下面的 YSS 绑定只用于服务端确认“实际命中”后播放。</p>
+        <section class="vfx-audio-panel">
+          <div class="vfx-audio-panel-heading"><strong>音效列表</strong><span>{{rows.length}} 个音效</span></div>
+          <div class="vfx-audio-list"><section v-for="(r,i) in rows" class="vfx-audio-card">
+            <label>音效 ID<input v-model="r.id" type="text"></label><p class="vfx-path">{{r.file}}</p>
+            <div class="vfx-audio-fields"><label>音量<input type="number" min="0" max="1" step=".1" v-model.number="r.volume"></label><label>音高<input type="number" min=".5" max="2" step=".1" v-model.number="r.pitch"></label><label>距离（格）<input type="number" min="1" max="64" v-model.number="r.range"></label><label>跟随实体<input type="checkbox" v-model="r.follow"></label></div>
+            <div class="vfx-toolbar"><button @click="preview(r)">试听</button><button @click="copy(r,false)">复制播放指令</button><button @click="copy(r,true)">复制停止指令</button><button @click="remove(i)">移除</button></div><code>{{script(r)}}</code>
+          </section><p v-if="!rows.length" class="vfx-audio-empty">暂无音效，点击“导入 OGG”开始。</p></div>
+        </section>
+        <section class="vfx-audio-panel vfx-audio-hit-panel">
+          <div class="vfx-audio-panel-heading"><strong>YSS 命中绑定</strong><span>{{hits.length}} 条绑定 · 服务端确认后播放</span></div>
+          <div class="vfx-audio-help vfx-audio-yss-guide"><strong>字段来源</strong><br><code>模型 ID</code> 来自 YSM 当前模型的 <code>displayPath</code>（YSM 对外的模型 ID），YSS 只使用这个值查找对应的 <code>hit.json</code>，不是 YSS 自己生成的 ID，也不是本窗口显示的 Bedrock geometry 标识；<code>动画名称</code> 是 YSM 动画名，同时也是 YSS 工程 <code>hit.json → animations</code> 的键；<code>段下标</code> 是该动画 <code>segments</code> 数组的下标，从 0 开始。YSS 的工程目录可能使用这个路径的归一化名称，但绑定值应以 YSM 运行时的 displayPath 为准。当前版本按这三个值精确匹配，不能填写 VFX geometry ID 或随意的显示名称。</div>
+          <button @click="addHit">添加精确命中绑定</button>
+          <datalist id="vfx_yss_animations"><option v-for="id in animations" :value="id"></option></datalist>
+          <div class="vfx-audio-hit-list"><div v-for="(h,i) in hits" class="vfx-audio-card"><label>YSM 模型 ID（displayPath）<input v-model="h.model_id" placeholder="从 YSM 当前模型获取，例如 鸣潮/女漂 (1)"></label><label>YSM 动画名称<input v-model="h.animation" list="vfx_yss_animations" placeholder="YSM 动画名 / hit.json → animations 的键"></label><label>YSS 判定段下标<input type="number" min="0" max="65535" v-model.number="h.segment_index"></label><label>命中音效<select v-model="h.sound"><option v-for="r in rows" :value="r.id">{{r.id}}</option></select></label><button @click="hits.splice(i,1)">删除绑定</button></div><p v-if="!hits.length" class="vfx-audio-empty">暂无精确命中绑定。多数技能音效可直接使用上方 Molang 指令，不需要填写这里。</p></div>
+        </section><p class="vfx-message">{{message}}</p>
+      </div>`}
+    }); audioDialog.show();
+  }
   function showStudio() {
     if (!studio) throw new Error('请先使用 VFX → 导入工程文件夹');
     let refreshError = '';
@@ -1409,7 +1597,7 @@
         },
         methods: {
           save() { guard(saveWorkspace); }, check() { this.message = validate(studio).join('\n') || '检查通过：每个动画事件、定位器和贴图都有明确绑定。'; },
-          help() { showHelp(); }, molang(effect) { return molang(studio, effect); }, preview() { guard(() => preview(this.current)); }, copyMolang() { guard(() => copyMolangText(studio, this.current)); }, capture() { guard(capture); this.$forceUpdate(); },
+          audio() { guard(showAudio); }, help() { showHelp(); }, molang(effect) { return molang(studio, effect); }, preview() { guard(() => preview(this.current)); }, copyMolang() { guard(() => copyMolangText(studio, this.current)); }, capture() { guard(capture); this.$forceUpdate(); },
           syncAssets() { guard(syncExternalAssets); }, exportClient() { guard(exportClient); }, exportFolder() { guard(() => { const dir = pickRecentDirectory('export_folder', '选择导出父目录（将创建包 ID 子目录）'); if (dir) exportTo(dir); }); },
           binding(event) { return eventParticle(this.p, this.current, event); },
           bind(event, value) { this.$set(this.current.eventBindings, event.key, {alias: event.effect, particle: value}); },
@@ -1431,7 +1619,7 @@
           <div class="vfx-toolbar"><button @click="help">使用说明</button><button @click="save">保存工程绑定</button><button @click="check">检查引用</button><button @click="syncAssets">同步外部资产到特效包</button><button @click="capture">保存当前编辑回工程</button><button @click="exportFolder">导出到文件夹</button><button @click="exportClient">导出到客户端</button></div>
           <div class="vfx-toolbar"><label>包 ID <input v-model="p.packId"></label><label>显示名 <input v-model="p.displayName"></label></div>
           <p>{{p.models.length}} 模型 · {{p.animations.length}} 动画 · {{p.particles.length}} 粒子 · {{p.textures.length}} 贴图</p>
-          <div class="vfx-toolbar"><button @click="tab='effects'">特效绑定</button><button @click="tab='particles'">粒子与贴图</button><button @click="tab='assets'">全部资产</button></div>
+          <div class="vfx-toolbar"><button @click="tab='effects'">特效绑定</button><button @click="tab='particles'">粒子与贴图</button><button @click="tab='assets'">全部资产</button><button @click="audio">音效</button></div>
           <div v-if="tab==='effects'" class="vfx-columns"><div class="vfx-list"><button @click="add">＋ 新建特效</button><div v-for="e in p.effects" :key="e.key"><input type="checkbox" v-model="e.enabled"><button @click="selected=e.key" :class="{selected:selected===e.key}">{{e.name}}</button></div><p v-if="!p.effects.length">当前工程还没有特效。点击“＋ 新建特效”，再选择模型、动画和粒子。</p></div>
             <div v-if="current" class="vfx-detail">
               <div class="vfx-detail-heading"><label>特效名<input v-model="current.name"></label><button type="button" class="vfx-danger" @click="remove">删除当前特效</button></div><div class="vfx-molang"><label>YSM 指令帧 Molang</label><div class="vfx-molang-row"><code>{{molang(current)}}</code><button type="button" @click="copyMolang">复制</button></div><small>复制后粘贴到 YSM 动画的“动画效果 → 指令”帧。</small></div><label>持续时间（tick；20 tick = 1 秒）<input type="number" min="1" max="72000" v-model.number="current.duration"></label>
@@ -1484,14 +1672,14 @@
   const pluginId = registered.yesstevevfx_studio ? 'yesstevevfx_studio' : (loadingLocal || 'yesstevevfx_studio');
   pluginApi.register(pluginId, {
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
-    icon: 'auto_awesome', version: '1.0.0-pre.1', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
+    icon: 'auto_awesome', version: '1.0.0-pre.2-audio.2', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);
       style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail-heading{display:flex;align-items:flex-end;gap:12px}.vfx-detail-heading>label{flex:1;min-width:0}.vfx-danger{background:var(--color-close);color:var(--color-light);white-space:nowrap}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}' + `
         dialog#vfx_new_pack{width:min(760px,calc(100vw - 32px)) !important}dialog#vfx_new_pack .dialog_content{margin:22px 28px 12px}dialog#vfx_new_pack .dialog_bar.form_bar{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr) 18px !important;align-items:center;column-gap:20px;min-height:38px;margin:10px 0}dialog#vfx_new_pack .dialog_bar.form_bar>label.name_space_left{width:auto;min-width:0;float:none;padding:0;line-height:1.35}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=text]{width:100%;box-sizing:border-box;min-width:0}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=checkbox]{justify-self:start;width:18px;height:18px;margin:0}dialog#vfx_new_pack .dialog_form_description{justify-self:end}
         dialog#vfx_new_pack{width:min(760px,calc(100vw - 32px))}dialog#vfx_new_pack .dialog_content{margin:22px 28px 12px}dialog#vfx_new_pack .dialog_bar.form_bar{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr);align-items:center;column-gap:20px;min-height:38px;margin:10px 0}dialog#vfx_new_pack .dialog_bar.form_bar>label.name_space_left{width:auto;min-width:0;float:none;padding:0;line-height:1.35}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=text]{width:100%;box-sizing:border-box;min-width:0}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=checkbox]{justify-self:start;width:18px;height:18px;margin:0}dialog#vfx_new_pack .dialog_form_description{justify-self:end}
-        .vfx-sync p{margin:12px 0;line-height:1.5}.vfx-sync label{display:flex;flex-direction:column;gap:6px;margin:12px 0}.vfx-sync select{width:100%;min-width:0}.vfx-sync-files{max-height:45vh;overflow:auto}.vfx-sync table{table-layout:fixed;border-collapse:collapse}.vfx-sync th,.vfx-sync td{text-align:left;padding:8px;border-bottom:1px solid var(--color-border);overflow-wrap:anywhere}.vfx-sync th:last-child{width:130px}
+        .vfx-audio{display:flex;flex-direction:column;gap:12px;min-width:0}.vfx-audio-panel{min-width:0;padding:12px;border:1px solid var(--color-border);border-radius:8px;background:color-mix(in srgb,var(--color-back) 72%,transparent)}.vfx-audio-panel-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 2px 8px;font-size:1.05em}.vfx-audio-panel-heading span{color:var(--color-subtle_text);font-size:.88em}.vfx-audio-list,.vfx-audio-hit-list{min-width:0;max-height:30vh;overflow-y:auto;overflow-x:hidden;padding:2px 8px 2px 2px;border:1px solid color-mix(in srgb,var(--color-border) 72%,transparent);border-radius:6px;background:color-mix(in srgb,var(--color-back) 55%,transparent)}.vfx-audio-hit-list{max-height:26vh;margin-top:10px}.vfx-audio-card{min-width:0;padding:14px;margin:10px 0;border:1px solid var(--color-border);border-radius:6px;background:var(--color-back)}.vfx-audio-card:first-child{margin-top:2px}.vfx-audio-card:last-child{margin-bottom:2px}.vfx-audio label{display:flex;flex-direction:column;gap:6px;margin:8px 0}.vfx-audio input,.vfx-audio select{min-width:0;width:100%}.vfx-audio input[type=checkbox]{width:20px}.vfx-audio-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}.vfx-audio code{white-space:pre-wrap;overflow-wrap:anywhere}.vfx-audio-help{margin:8px 2px;line-height:1.45;color:var(--color-subtle_text)}.vfx-audio-empty{margin:12px 4px;color:var(--color-subtle_text)}.vfx-sync p{margin:12px 0;line-height:1.5}.vfx-sync label{display:flex;flex-direction:column;gap:6px;margin:12px 0}.vfx-sync select{width:100%;min-width:0}.vfx-sync-files{max-height:45vh;overflow:auto}.vfx-sync table{table-layout:fixed;border-collapse:collapse}.vfx-sync th,.vfx-sync td{text-align:left;padding:8px;border-bottom:1px solid var(--color-border);overflow-wrap:anywhere}.vfx-sync th:last-child{width:130px}
         .vfx-models{display:flex;flex-direction:column;gap:16px;min-width:0;line-height:1.5}
         .vfx-models p{margin:0}
         .vfx-models-header{display:grid;gap:6px;min-width:0}
@@ -1519,6 +1707,7 @@
         .vfx-model-animations li{overflow-wrap:anywhere;padding:2px 0}
         .vfx-model-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
         .vfx-models .vfx-model-hint,.vfx-models-empty{color:var(--color-subtle_text);padding:8px 0}
+        .vfx-model-audio-row{display:block;margin:2px 0;overflow-wrap:anywhere}.vfx-model-audio-row small{color:var(--color-subtle_text);margin-left:4px}.vfx-audio-yss-guide{line-height:1.55;padding:10px 12px;border:1px dashed var(--color-border);border-radius:6px;background:color-mix(in srgb,var(--color-back) 55%,transparent)}
       `);
       molangStyle = Blockbench.addCSS('.vfx-molang{padding:10px 12px;margin:8px 0 16px;border:1px solid var(--color-border);border-radius:4px;background:var(--color-back)}.vfx-molang-row{display:flex;align-items:center;gap:8px}.vfx-molang-row code{flex:1;min-width:0;padding:7px 9px;overflow-wrap:anywhere;white-space:pre-wrap;background:var(--color-back)}.vfx-molang-row button{flex:0 0 auto}.vfx-molang small{display:block;margin-top:6px;color:var(--color-subtle_text)}');
       const codec = AnimationCodec.codecs.bedrock;
@@ -1537,6 +1726,7 @@
         ['rescan', '重新扫描资产', 'refresh', rescan],
         ['sync_assets', '同步外部资产到特效包', 'drive_file_move', syncExternalAssets],
         ['update_runtime', '更新当前包的运行时资源', 'build', updateCurrentRuntime],
+        ['audio', '音效管理', 'volume_up', showAudio],
         ['manage', '资产与绑定', 'account_tree', showStudio],
         ['help', '使用说明', 'help_outline', showHelp],
         ['capture', '保存当前编辑回工程', 'save', capture],
@@ -1552,7 +1742,7 @@
       Blockbench.removeListener('undo', undoSyncListener);
       Blockbench.removeListener('redo', redoSyncListener);
       if (AnimationCodec.codecs.bedrock.saveAnimation === saveAnimationHook) AnimationCodec.codecs.bedrock.saveAnimation = originalSaveAnimation;
-      dialog?.delete(); picker?.delete(); menu?.delete(); actions.forEach(action => action.delete()); MenuBar.update(); style?.delete(); molangStyle?.delete(); sessions.clear();
+      stopAudioPreview(); audioDialog?.delete(); dialog?.delete(); picker?.delete(); menu?.delete(); actions.forEach(action => action.delete()); MenuBar.update(); style?.delete(); molangStyle?.delete(); sessions.clear();
     }
   });
 })();

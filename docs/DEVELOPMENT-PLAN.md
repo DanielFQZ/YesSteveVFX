@@ -1,5 +1,7 @@
 # YesSteveVFX 开发计划
 
+2026-10-01 更新：[轻量音效后端与 YesSteveSkill 命中联动方案](AUDIO-BACKEND-PLAN.md) 已完成客户端音频、Molang、Blockbench 配置和 YSS 命中桥接；当前继续优化叠音与纯音效包工作流，不扩展全局混音或 DSP。
+
 当前验收基线是 Forge 1.20.1、关闭 Oculus 光影、安装 YSM 与 eyelib。开发顺序先保证特效的模型、动画、粒子状态和跟随表现稳定，再加入额外的屏幕后处理。
 
 ## 阶段一：模型与粒子运行时
@@ -13,6 +15,8 @@
 ## 阶段二：控制与资源交付
 
 YSM 通过 Molang 指令帧调用 `ctrl.vfx_play`、`ctrl.vfx_set` 和 `ctrl.vfx_stop`。YesSteveVFX 保持播放实例和渲染生命周期，未来从 YSM 通用文件容器读取同一套 effect 定义和资源字节，不把渲染状态写回 YSM。
+
+独立 VFX 包与随 YSM 模型分发的 `vfx/` 目录共用同一个资源快照和校验流程；目录布局、模型文件键和 YSS/Camera 事件边界见 [YSM-VFX-CONTAINER-PLAN.md](YSM-VFX-CONTAINER-PLAN.md)。
 
 ## 阶段三：选择性辉光
 
@@ -48,7 +52,7 @@ VFX 菜单增加“切换模型/打开其他模型”。已打开的模型复用
 ```text
 manifest.json
   -> effects/*.json
-    -> assets/eyelib/entity/*.json
+    -> entity/*.json (旧包也支持 assets/eyelib/entity/*.json)
       -> geometry / animations / particle_effects / textures / render_controllers
 ```
 

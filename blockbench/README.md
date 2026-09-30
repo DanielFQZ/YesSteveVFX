@@ -1,6 +1,8 @@
 # YesSteveVFX Studio（Blockbench 插件）
 
-桌面版 Blockbench 插件，用于管理一个特效包里的模型、动画、粒子与贴图，编辑源文件，并生成 YesSteveVFX 使用的运行时包。当前插件版本：**1.0.0-pre.1**。无需修改 Blockbench、YSM 或 eyelib。
+桌面版 Blockbench 插件，用于管理一个特效包里的模型、动画、粒子、贴图与音效，编辑源文件，并生成 YesSteveVFX 使用的运行时包。当前插件版本：**1.0.0-pre.2-audio.2**。无需修改 Blockbench、YSM 或 eyelib。
+
+音效入口是 **VFX → 音效管理**：导入单声道 OGG、试听、配置播放参数、复制 YSM 指令，并随包导出。命中绑定配置的是 YSM 当前模型的公开 `displayPath`、动画名和 YSS 判定段下标；YSS 只读取 YSM 模型并附加判定，随 `audio.json` 导出并由 VFX 的可选 YSS 桥接器使用。详见 [音效使用说明](../docs/AUDIO-USER-GUIDE.md)。
 
 ## 安装 / 更新
 
@@ -83,7 +85,7 @@ manifest.json → effects/*.json → client entity
 1. 扫描当前标签中粒子帧实际选中的 JSON、这些粒子的贴图、贴图列表中的外部或未保存图片，以及已导入的外部动画文件。其它模型标签不参与此次同步。
 2. 优先使用 Blockbench 已选择的粒子预览贴图，其次按粒子 JSON 的路径寻找 PNG。找不到或路径有歧义时，弹出选择窗口，为每个缺失项指定 PNG。
 3. 在同步预览中检查源文件和包内位置；如果模型有多个贴图，可选择该模型实际使用的贴图。当前运行时每个模型仍使用一张默认贴图。
-4. 点击 **复制并更新引用**。外部资产写入 `assets/eyelib/particles/`、`assets/eyelib/textures/`、`assets/eyelib/animations/`，默认保留原文件名，例如 `assets/eyelib/particles/12.json`。同名且内容不同时才追加 `_2`、`_3` 等数字后缀；重复同步相同文件会复用已有文件。外部原文件不会移动或修改。
+4. 点击 **复制并更新引用**。外部资产写入 `particles/`、`textures/`、`animations/`，默认保留原文件名，例如 `particles/12.json`。同名且内容不同时才追加 `_2`、`_3` 等数字后缀；重复同步相同文件会复用已有文件。外部原文件不会移动或修改。
 5. 粒子帧的文件路径和别名、模型贴图关系、外部动画的保存路径会更新到包内。新增资产立即进入 VFX 索引，不需要再次扫描。
 6. 点击 **保存当前编辑回工程**，或使用动画保存按钮，将新引用写回动画 JSON。插件随后自动生成当前包的运行时资源和实体映射；若直接编辑客户端包，执行 `/vfx_client reload` 即可。绑定不完整时会明确提示“源文件已保存，运行时包尚未更新”。
 
@@ -105,7 +107,7 @@ manifest.json → effects/*.json → client entity
 
 **直接编辑客户端包时，无需导出到同一目录。** 动画保存按钮和“保存当前编辑回工程”会同时更新运行时包。只用原生“保存模型”、改了粒子 JSON 或从外部程序修改文件后，点击 **VFX → 更新当前包的运行时资源**，再执行 `/vfx_client reload`。独立源工程仍可使用“导出到客户端”；完整导出目标仍不允许与源目录重叠。
 
-编辑资产（包括 `assets/eyelib/particles`、`assets/eyelib/textures` 和 `assets/eyelib/animations`）与游戏用资源分开保存。生成器把完整的运行时副本写到 `assets/eyelib/<资源类型>/vfx_generated/<包ID>/`，规范化粒子 identifier、贴图路径与动画事件别名，生成 client entity 和 effect 定义，并更新 manifest。Blockbench 继续关联源资产；请勿直接编辑 `vfx_generated` 中的生成文件。重新扫描时这些副本不会重复进入编辑资产列表。
+编辑资产（包括 `particles`、`textures` 和 `animations`）与游戏用资源分开保存。生成器把完整的运行时副本写到根目录各分类下的 `vfx_generated/<包ID>/`，规范化粒子 identifier、贴图路径与动画事件别名，生成 client entity 和 effect 定义，并更新 manifest。Blockbench 继续关联源资产；请勿直接编辑 `vfx_generated` 中的生成文件。重新扫描时这些副本不会重复进入编辑资产列表。旧 `assets/eyelib/...` 包仍可导入。
 
 不要将编辑备份或导出备份放进 `packs`。运行时 `/vfx_client reload` 会自动注册导出的特效。
 
