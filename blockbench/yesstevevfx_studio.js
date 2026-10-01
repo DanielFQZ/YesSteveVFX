@@ -345,6 +345,21 @@
     }
     for (const bone of geometry.bones || []) checkBone(bone);
   }
+  function importedUvSize(model, occupied) {
+    if (occupied || model?.meta?.model_format !== 'bedrock' || !model.elements?.length ||
+        model.elements.some(e => e.type && e.type !== 'cube')) return null;
+    const width = model.resolution?.width, height = model.resolution?.height;
+    return [width, height].every(v => Number.isInteger(v) && v >= 1 && v <= 16384) ? {width, height} : null;
+  }
+  function planImportedUv(cubes, current, target) {
+    if (![current.width, current.height, target.width, target.height].every(v => Number.isFinite(v) && v > 0)) throw new Error('无法自动同步：模型 UV 尺寸无效');
+    // Blockbench's project merger scales per-face coordinates to the destination
+    // canvas but leaves box UVs untouched. Restore only the scaled coordinates.
+    return cubes.filter(c => !c.box_uv).flatMap(c => Object.values(c.faces).map(face => {
+      if (!Array.isArray(face.uv) || face.uv.length !== 4 || !face.uv.every(Number.isFinite)) throw new Error('无法自动同步：模型逐面 UV 坐标无效');
+      return {face, uv: face.uv.map((v, i) => v * (i % 2 ? target.height / current.height : target.width / current.width))};
+    }));
+  }
   function build(project, options = {}) {
     const errors = validate(project, undefined, options);
     if (errors.length) throw new Error(errors.join('\n'));
@@ -888,13 +903,14 @@
     candidate.audio.sounds[id] = {file: rel, volume: 1, pitch: 1, range: 24, follow: false};
     saveAudio(candidate); project.audio = candidate.audio; return id;
   }
-  const Core = {inspectOgg, audioDocument, saveAudio, importAudio, scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath, molang};
+  const Core = {inspectOgg, audioDocument, saveAudio, importAudio, scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath, molang, importedUvSize, planImportedUv};
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
   let studio = null, dialog = null, style = null, molangStyle = null, menu = null;
   const actions = [];
   let originalSaveAnimation = null, saveAnimationHook = null;
+  let originalMergeProject = null, mergeProjectHook = null;
   const syncUndo = new WeakMap();
   function restoreSyncState(entry, phase) {
     const record = syncUndo.get(entry);
@@ -1155,7 +1171,11 @@
     picker?.delete();
     picker = new Dialog({id: 'vfx_models', title: 'VFX · 选择模型', width: 1000, singleButton: true,
       component: {
-        data: {views: modelViews(studio), search: '', root: studio.root,
+        data: {views: modelViews(studio).map(view => {
+          let uvError = '';
+          if (view.model) try { validateModelUv(view.model.geometry, view.model.path); } catch (error) { uvError = error.message; }
+          return {...view, uvError};
+        }), search: '', root: studio.root,
           counts: {models: studio.models.length, animations: studio.animations.length, particles: studio.particles.length}},
         computed: {filtered() { return this.views.filter(v => JSON.stringify([v.model?.path, v.model?.id, v.effects.map(e => e.name)]).toLowerCase().includes(this.search.toLowerCase())); }},
         methods: {
@@ -1182,6 +1202,8 @@
             <article class="vfx-model-card" v-for="v in filtered" :key="v.key">
               <strong class="vfx-model-title">{{v.model ? v.model.path : '仅粒子'}}</strong>
               <p class="vfx-model-meta" v-if="v.model">geometry #{{v.model.index}} · {{v.bones}} 骨骼 · {{v.cubes}} 方块</p>
+              <p class="vfx-model-meta" v-if="v.model">模型 UV：{{v.model.geometry.description.texture_width}} × {{v.model.geometry.description.texture_height}}（独立于 PNG 分辨率）</p>
+              <p class="vfx-model-uv-error" v-if="v.uvError">{{v.uvError}}</p>
               <dl class="vfx-model-info">
                 <template v-if="v.model"><dt>模型标识</dt><dd>{{v.model.id}}</dd></template>
                 <dt>特效</dt><dd>{{v.effects.map(e => e.name).join('、') || '尚未关联'}}</dd>
@@ -1699,10 +1721,29 @@
   const pluginId = registered.yesstevevfx_studio ? 'yesstevevfx_studio' : (loadingLocal || 'yesstevevfx_studio');
   pluginApi.register(pluginId, {
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
-    icon: 'auto_awesome', version: '1.0.0-pre.2-audio.3', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
+    icon: 'auto_awesome', version: '1.0.0-pre.2-audio.4', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);
+      originalMergeProject = Codecs.project.merge;
+      mergeProjectHook = function(model, ...args) {
+        const project = Project;
+        const target = Format === Formats.bedrock && sessions.has(project?.uuid) ? importedUvSize(model, Outliner.elements.length > 0) : null;
+        const result = originalMergeProject.call(this, model, ...args);
+        if (target && Project === project && Cube.all.length &&
+            (project.texture_width !== target.width || project.texture_height !== target.height)) guard(() => {
+          const changes = planImportedUv(Cube.all, {width: project.texture_width, height: project.texture_height}, target);
+          Undo.initEdit({elements: Cube.all.filter(c => !c.box_uv), uv_only: true, uv_mode: true, textures: Texture.all});
+          project.texture_width = target.width; project.texture_height = target.height;
+          for (const texture of Texture.all) { texture.uv_width = target.width; texture.uv_height = target.height; }
+          for (const change of changes) change.face.uv = change.uv;
+          Canvas.updateAllUVs();
+          Undo.finishEdit('继承导入模型的 UV 尺寸');
+          Blockbench.showQuickMessage(`已采用原模型 UV 尺寸 ${target.width}×${target.height}，并同步逐面 UV。保存当前编辑回工程后生效。`, 6000);
+        });
+        return result;
+      };
+      Codecs.project.merge = mergeProjectHook;
       style = Blockbench.addCSS('.vfx-studio{padding:12px}.vfx-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.vfx-path{word-break:break-all;color:var(--color-subtle_text)}.vfx-columns{display:grid;grid-template-columns:190px 1fr;gap:20px}.vfx-list>div{display:flex;margin:6px 0}.vfx-list button{overflow-wrap:anywhere}.vfx-detail label,.vfx-particle label{display:flex;flex-direction:column;margin-bottom:12px;gap:4px}.vfx-detail-heading{display:flex;align-items:flex-end;gap:12px}.vfx-detail-heading>label{flex:1;min-width:0}.vfx-danger{background:var(--color-close);color:var(--color-light);white-space:nowrap}.vfx-detail select,.vfx-particle select{width:100%}.vfx-studio table{width:100%;margin:12px 0}.vfx-studio td{padding:6px;word-break:break-all}.vfx-particle{padding:12px;border-bottom:1px solid var(--color-border)}.vfx-message{white-space:pre-wrap;padding:12px}.vfx-list .selected{color:var(--color-accent)}' + `
         dialog#vfx_new_pack{width:min(760px,calc(100vw - 32px)) !important}dialog#vfx_new_pack .dialog_content{margin:22px 28px 12px}dialog#vfx_new_pack .dialog_bar.form_bar{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr) 18px !important;align-items:center;column-gap:20px;min-height:38px;margin:10px 0}dialog#vfx_new_pack .dialog_bar.form_bar>label.name_space_left{width:auto;min-width:0;float:none;padding:0;line-height:1.35}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=text]{width:100%;box-sizing:border-box;min-width:0}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=checkbox]{justify-self:start;width:18px;height:18px;margin:0}dialog#vfx_new_pack .dialog_form_description{justify-self:end}
         dialog#vfx_new_pack{width:min(760px,calc(100vw - 32px))}dialog#vfx_new_pack .dialog_content{margin:22px 28px 12px}dialog#vfx_new_pack .dialog_bar.form_bar{display:grid;grid-template-columns:minmax(150px,190px) minmax(0,1fr);align-items:center;column-gap:20px;min-height:38px;margin:10px 0}dialog#vfx_new_pack .dialog_bar.form_bar>label.name_space_left{width:auto;min-width:0;float:none;padding:0;line-height:1.35}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=text]{width:100%;box-sizing:border-box;min-width:0}dialog#vfx_new_pack .dialog_bar.form_bar>input[type=checkbox]{justify-self:start;width:18px;height:18px;margin:0}dialog#vfx_new_pack .dialog_form_description{justify-self:end}
@@ -1720,6 +1761,7 @@
         .vfx-model-card{min-width:0;padding:16px;border:1px solid var(--color-border);border-radius:6px;background:var(--color-back)}
         .vfx-model-title{display:block;font-size:1.05em;overflow-wrap:anywhere}
         .vfx-models .vfx-model-meta{margin-top:4px;color:var(--color-subtle_text);font-size:.9em}
+        .vfx-models .vfx-model-uv-error{margin-top:8px;padding:10px;border:1px solid var(--color-close);border-radius:4px;overflow-wrap:anywhere}
         .vfx-model-info{display:grid;grid-template-columns:76px minmax(0,1fr);gap:8px 12px;margin:14px 0}
         .vfx-model-info dt{color:var(--color-subtle_text)}
         .vfx-model-info dd{margin:0;min-width:0;overflow-wrap:anywhere}
@@ -1769,6 +1811,7 @@
       Blockbench.removeListener('undo', undoSyncListener);
       Blockbench.removeListener('redo', redoSyncListener);
       if (AnimationCodec.codecs.bedrock.saveAnimation === saveAnimationHook) AnimationCodec.codecs.bedrock.saveAnimation = originalSaveAnimation;
+      if (Codecs.project.merge === mergeProjectHook) Codecs.project.merge = originalMergeProject;
       stopAudioPreview(); audioDialog?.delete(); dialog?.delete(); picker?.delete(); menu?.delete(); actions.forEach(action => action.delete()); MenuBar.update(); style?.delete(); molangStyle?.delete(); sessions.clear();
     }
   });

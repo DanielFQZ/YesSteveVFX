@@ -397,3 +397,24 @@ test('new editable models support explicit UV dimensions instead of the carrier 
   assert.throws(() => core.createEmptyPack(parent, {packId: 'bad', textureWidth: 0}), /UV 尺寸/);
   assert.ok(!fs.existsSync(path.join(parent, 'bad')));
 });
+test('automatic import dimensions come only from an empty Bedrock model merge', () => {
+  const model = {meta: {model_format: 'bedrock'}, resolution: {width: 2048, height: 1024}, elements: [{type: 'cube'}], textures: [{width: 4096, height: 4096}]};
+  assert.deepEqual(core.importedUvSize(model, false), {width: 2048, height: 1024});
+  assert.equal(core.importedUvSize(model, true), null, 'existing geometry must not be remapped');
+  assert.equal(core.importedUvSize({...model, meta: {model_format: 'free'}}, false), null);
+  assert.equal(core.importedUvSize({...model, resolution: undefined}, false), null, 'PNG dimensions are not a fallback');
+  assert.equal(core.importedUvSize({...model, resolution: {width: 0, height: 16}}, false), null);
+  assert.equal(core.importedUvSize({...model, elements: [{type: 'mesh'}]}, false), null);
+  assert.equal(core.importedUvSize({...model, elements: []}, false), null);
+});
+test('import UV restoration handles mixed UV and non-square canvases without changing box UVs', () => {
+  const face = {uv: [1, 2, -3, 4]}, box = {box_uv: true, uv_offset: [123, 456], faces: {north: {uv: [9, 8, 7, 6]}}};
+  const cubes = [{box_uv: false, faces: {north: face}}, box], before = JSON.stringify(cubes);
+  const changes = core.planImportedUv(cubes, {width: 16, height: 16}, {width: 2048, height: 1024});
+  assert.equal(JSON.stringify(cubes), before, 'planning is read-only until the undo transaction starts');
+  assert.equal(changes.length, 1); assert.equal(changes[0].face, face);
+  assert.deepEqual(changes[0].uv, [128, 128, -384, 256]);
+  assert.deepEqual(core.planImportedUv(cubes, {width: 2048, height: 1024}, {width: 2048, height: 1024})[0].uv, face.uv);
+  assert.throws(() => core.planImportedUv(cubes, {width: 0, height: 16}, {width: 2048, height: 1024}), /尺寸无效/);
+  assert.throws(() => core.planImportedUv([{faces: {north: {uv: [NaN, 0, 1, 1]}}}], {width: 16, height: 16}, {width: 16, height: 16}), /坐标无效/);
+});
