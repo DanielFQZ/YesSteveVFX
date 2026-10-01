@@ -24,6 +24,55 @@ function writeOutput(root, output) {
     fs.mkdirSync(path.dirname(dest), {recursive: true}); fs.writeFileSync(dest, bytes);
   }
 }
+
+test('texture-color materials preserve particle blending and round-trip model settings', t => {
+  const project = setup(t), [a, b] = project.particles;
+  project.effects[0].textureColor = true;
+  a.json.particle_effect.description.basic_render_parameters.material = 'particles_add';
+  b.json.particle_effect.description.basic_render_parameters.material = 'particles_alpha';
+  a.lighting = 'texture'; b.lighting = 'texture';
+  const source = JSON.stringify(project.particles.map(p => p.json));
+  const output = core.build(project);
+  assert.equal(outputDocuments(output, 'entity')[0]['minecraft:client_entity'].description.materials.default, 'eyelib:texture_unlit');
+  assert.deepEqual(outputDocuments(output, 'particles').map(p => p.particle_effect.description.basic_render_parameters.material),
+    ['eyelib:texture_unlit_add', 'eyelib:texture_unlit_alpha']);
+  assert.equal(JSON.stringify(project.particles.map(p => p.json)), source);
+  core.saveSettings(project);
+  const rescan = core.scan(project.root);
+  assert.equal(rescan.effects[0].textureColor, true);
+  assert.deepEqual(rescan.particles.map(p => p.lighting), ['texture', 'texture']);
+  const exportedRoot = fs.mkdtempSync(path.join(require('os').tmpdir(), 'vfx-original-color-'));
+  t.after(() => fs.rmSync(exportedRoot, {recursive: true, force: true}));
+  writeOutput(exportedRoot, output);
+  const imported = core.scan(exportedRoot);
+  assert.equal(imported.effects[0].textureColor, true);
+  assert.equal(outputDocuments(core.build(imported), 'entity')[0]['minecraft:client_entity'].description.materials.default, 'eyelib:texture_unlit');
+  project.effects[0].textureColor = false; a.lighting = 'source'; b.lighting = 'source';
+  assert.equal(outputDocuments(core.build(project), 'entity')[0]['minecraft:client_entity'].description.materials.default, 'entity_translucent');
+});
+
+test('texture-color refuses to silently change unknown custom particle blending', t => {
+  const project = setup(t);
+  project.particles[0].json.particle_effect.description.basic_render_parameters.material = 'custom:distortion';
+  project.particles[0].lighting = 'texture';
+  assert.throws(() => core.build(project), /不支持自定义粒子材质/);
+});
+
+test('Blockbench preview uses standard particle materials for texture-color runtime assets', t => {
+  const p = setup(t).particles[0];
+  p.json.particle_effect.description.basic_render_parameters.material = 'particles_add';
+  p.lighting = 'texture';
+  const runtime = core.particleDocument(p);
+  assert.equal(runtime.particle_effect.description.basic_render_parameters.material, 'eyelib:texture_unlit_add');
+  assert.equal(core.particleDocument(p, false).particle_effect.description.basic_render_parameters.material, 'particles_add');
+  p.json = runtime; p.lighting = 'source';
+  assert.equal(core.particleDocument(p, false).particle_effect.description.basic_render_parameters.material, 'particles_add');
+  assert.equal(p.json.particle_effect.description.basic_render_parameters.material, 'eyelib:texture_unlit_add');
+  p.lighting = 'ambient';
+  const ambient = core.particleDocument(p);
+  assert.equal(ambient.particle_effect.description.basic_render_parameters.material, 'particles_add');
+  assert.ok(Object.hasOwn(ambient.particle_effect.components, lightingKey));
+});
 test('lighting export preserves defaults, supports both overrides and never changes source particles', t => {
   const project = setup(t), [a, b] = project.particles;
   a.json.particle_effect.components[lightingKey] = {};

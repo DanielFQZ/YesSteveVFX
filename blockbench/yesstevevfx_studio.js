@@ -85,7 +85,7 @@
         for (const [id, animation] of Object.entries(json.animations)) project.animations.push({key: `${rel}#${id}`, path: rel, id, animation});
       } else if (json.particle_effect) {
         asset.type = '粒子';
-        project.particles.push({key: rel, path: rel, id: json.particle_effect.description?.identifier || '', json, texture: '', lighting: 'source'});
+        project.particles.push({key: rel, path: rel, id: json.particle_effect.description?.identifier || '', json, texture: '', lighting: /^eyelib:texture_unlit(?:_alpha|_add|_opaque)?$/.test(json.particle_effect.description?.basic_render_parameters?.material || '') ? 'texture' : 'source'});
       } else if (json['minecraft:client_entity']) asset.type = '实体绑定';
       else if (json.render_controllers) asset.type = '渲染控制器';
       else if (json.animation_controllers) { asset.type = '动画控制器'; project.warnings.push(`${rel}：第一版仅导出直接播放的动画，不执行动画控制器。`); }
@@ -136,6 +136,7 @@
       const controller = uniqueMatch(renderControllers.filter(([id]) => controllerIds.includes(id)))?.[1];
       const effect = {key: `effect_${project.effects.length + 1}`, enabled: true, name, animation: animation?.key || '', model: model?.key || '', texture,
         ignoreLighting: controller?.ignore_lighting ?? false,
+        textureColor: Object.values(entity?.materials || {}).includes('eyelib:texture_unlit'),
         modelUnresolved: !model && (!!geometryId || project.models.length > 1), eventBindings: {}, duration: definition?.duration_ticks || Math.max(20, Math.ceil((animation?.animation?.animation_length || 5) * 20) + 20), bindings: {}};
       for (const event of events(animation?.animation)) {
         const ref = entity?.particle_effects?.[event.effect];
@@ -182,6 +183,7 @@
     }
     for (const effect of project.effects) {
       effect.ignoreLighting ??= false;
+      effect.textureColor ??= false;
       effect.bindings ||= {};
       effect.eventBindings ||= {};
       // Version 1 had only alias bindings. Migrate only known file identities.
@@ -284,7 +286,7 @@
     let name = /^[a-z0-9]/.test(base) ? base.slice(0, 80) : 'effect';
     const stem = name;
     for (let n = 2; project.effects.some(e => e.name === name); n++) name = `${stem}_${n}`;
-    return {key: crypto.randomUUID(), name, enabled: true, model, modelUnresolved: false, texture: '', ignoreLighting: false,
+    return {key: crypto.randomUUID(), name, enabled: true, model, modelUnresolved: false, texture: '', ignoreLighting: false, textureColor: false,
       animation: animation?.key || '', duration: Math.max(20, Math.ceil((animation?.animation.animation_length || 5) * 20) + 20),
       bindings: {}, eventBindings: {}};
   }
@@ -293,14 +295,30 @@
       particleTextures: Object.fromEntries(project.particles.map(p => [p.key, p.texture])),
       particleLighting: Object.fromEntries(project.particles.map(p => [p.key, p.lighting ?? 'source']))};
   }
-  function particleDocument(particle) {
+  function particleDocument(particle, runtime = true) {
     const mode = particle.lighting ?? 'source';
-    if (!['source', 'ambient', 'unlit'].includes(mode)) throw new Error(`${particle.path}：未知粒子光照模式 ${mode}`);
+    if (!['source', 'ambient', 'unlit', 'texture'].includes(mode)) throw new Error(`${particle.path}：未知粒子光照模式 ${mode}`);
     const document = clone(particle.json);
     if (mode !== 'source') {
       const components = document.particle_effect.components ||= {};
       if (mode === 'ambient') components['minecraft:particle_appearance_lighting'] = {};
       else delete components['minecraft:particle_appearance_lighting'];
+    }
+    if (mode === 'texture') {
+      const parameters = document.particle_effect.description.basic_render_parameters;
+      const material = parameters.material || 'particles_alpha';
+      const mapped = {particles_alpha: 'eyelib:texture_unlit_alpha', particles_blend: 'eyelib:texture_unlit',
+        particles_add: 'eyelib:texture_unlit_add', particles_opaque: 'eyelib:texture_unlit_opaque', particles_base: 'eyelib:texture_unlit_opaque'};
+      const name = material.replace(/^minecraft:/, '');
+      if (Object.values(mapped).includes(material)) parameters.material = material;
+      else if (mapped[name]) parameters.material = mapped[name];
+      else throw new Error(`${particle.path}：原色模式不支持自定义粒子材质 ${material}，请选择跟随源 JSON`);
+    }
+    if (!runtime || mode === 'ambient' || mode === 'unlit') {
+      const parameters = document.particle_effect.description.basic_render_parameters;
+      const previewMaterials = {'eyelib:texture_unlit': 'particles_blend', 'eyelib:texture_unlit_alpha': 'particles_alpha',
+        'eyelib:texture_unlit_add': 'particles_add', 'eyelib:texture_unlit_opaque': 'particles_opaque'};
+      parameters.material = previewMaterials[parameters.material] || parameters.material;
     }
     return document;
   }
@@ -327,6 +345,7 @@
         names.add(effect.name);
         if (!Number.isInteger(Number(effect.duration)) || effect.duration < 1 || effect.duration > 72000) throw new Error('持续时间必须为 1–72000 tick');
         if (effect.ignoreLighting !== undefined && typeof effect.ignoreLighting !== 'boolean') throw new Error('模型全亮必须为布尔值');
+        if (effect.textureColor !== undefined && typeof effect.textureColor !== 'boolean') throw new Error('模型贴图原色必须为布尔值');
         if (effect.modelUnresolved && !effect.model) throw new Error('模型关系未确认，请在模型与动画绑定中选择模型或明确设为仅粒子');
         const model = effect.model ? find(project.models, effect.model, '模型') : null;
         if (model) {
@@ -457,7 +476,7 @@
       const geometry = geometryResource(effect);
       // Preserve the translucent rendering previously supplied by eyelib's
       // fallback component, while using a real controller/material binding.
-      const entity = {identifier: `yesstevevfx:${resourcePack}/${effect.name}`, materials: {default: 'entity_translucent'},
+      const entity = {identifier: `yesstevevfx:${resourcePack}/${effect.name}`, materials: {default: effect.textureColor ? 'eyelib:texture_unlit' : 'entity_translucent'},
         geometry: {default: geometry.id}, textures: {}, particle_effects: {},
         render_controllers: [`controller.render.yesstevevfx.${base}`]};
       if (effect.model) entity.textures.default = putTexture(effect.texture);
@@ -928,7 +947,7 @@
     candidate.audio.sounds[id] = {file: rel, volume: 1, pitch: 1, range: 24, follow: false};
     saveAudio(candidate); project.audio = candidate.audio; return id;
   }
-  const Core = {inspectOgg, audioDocument, saveAudio, importAudio, scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath, molang, importedUvSize, planImportedUv};
+  const Core = {particleDocument, inspectOgg, audioDocument, saveAudio, importAudio, scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath, molang, importedUvSize, planImportedUv};
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
@@ -1097,7 +1116,7 @@
   function loadParticlePreview(particle) {
     const absolute = fileAt(studio.root, particle.path);
     // Blockbench indexes preview emitters by absolute file path, not identifier.
-    const document = particleDocument(particle);
+    const document = particleDocument(particle, false);
     // Preview is indexed by absolute file path; retain the real identifier.
     // Synthetic identifiers must never leak into saved animation events.
     const loaded = Animator.loadParticleEmitter(absolute, JSON.stringify(document));
@@ -1700,14 +1719,14 @@
               <label>模型<select v-model="current.model" @change="modelChanged"><option value="">无模型（仅粒子）</option><option v-for="m in p.models" :value="m.key">{{m.path}} · {{m.id}}</option></select></label>
               <p v-if="current.modelUnresolved">模型关系尚未确认。请选择模型，或点击<button @click="modelChanged">确认为仅粒子</button></p>
               <label v-if="current.model">模型贴图<select v-model="current.texture"><option value="">请选择</option><option v-for="t in p.textures" :value="t.key">{{t.path}}</option></select></label>
-              <div v-if="current.model" class="vfx-lighting"><label class="vfx-lighting-toggle"><input type="checkbox" v-model="current.ignoreLighting">模型全亮（忽略环境光照）</label><p>仅作用于当前特效的模型。开启后使用最大光照值，表面仍可能有方向明暗；不会产生光晕或照亮周围。请在游戏内测试，Blockbench 预览不代表游戏光照。</p></div>
+              <div v-if="current.model" class="vfx-lighting"><label class="vfx-lighting-toggle"><input type="checkbox" v-model="current.textureColor">贴图原色（实验：无环境光、无分面明暗）</label><label class="vfx-lighting-toggle"><input type="checkbox" v-model="current.ignoreLighting" :disabled="current.textureColor">模型全亮（忽略环境光照）</label><p v-if="current.textureColor">需要配套 eyelib 原色测试版。保留贴图、透明度和动画颜色；在光影主要合成后绘制，不参与辉光、反射或照亮周围。水与玻璃的交叉遮挡存在限制。保存后请在游戏中 reload 测试。</p><p v-else>全亮使用最大光照值，表面仍可能有方向明暗，开启光影后的表现由光影包决定。Blockbench 预览不代表游戏光照。</p></div>
               <label>动画<select v-model="current.animation"><option value="">无动画（静态模型）</option><option v-for="a in p.animations" :value="a.key">{{a.id}} · {{a.path}}</option></select></label>
               <p>逐事件绑定粒子文件；同名事件也可选择不同粒子。导出时自动生成匹配的实体引用。</p>
               <label v-for="event in eventRows" :key="event.key">{{event.time}} s · 事件 {{event.index + 1}} · {{event.effect}} · {{event.locator || '实体原点'}}<select :value="binding(event) || ''" @change="bind(event, $event.target.value)"><option value="">未绑定</option><option v-for="r in p.particles" :value="r.key">{{r.path}}</option></select></label>
               <table><tr><th>触发时间</th><th>事件别名</th><th>定位器</th></tr><tr v-for="r in eventRows"><td>{{r.time}} s</td><td>{{r.effect}}</td><td>{{r.locator || '实体原点'}}</td></tr></table>
               <button @click="preview">打开 / 更新 Blockbench 预览</button><p>空格播放。模型、贴图绘制、动画和定位器在主界面编辑；完成后点击“保存当前编辑回工程”。</p>
             </div></div>
-          <div v-if="tab==='particles'"><div v-for="r in p.particles" class="vfx-particle"><strong>{{r.path}}</strong><p>源 ID：{{r.id || '未设置'}}（导出时自动生成独立 ID）</p><label>粒子贴图<select v-model="r.texture"><option value="">未绑定</option><option v-for="t in p.textures" :value="t.key">{{t.path}}</option></select></label><div class="vfx-lighting"><label>粒子光照<select v-model="r.lighting"><option value="source">跟随源 JSON（{{r.json.particle_effect.components &amp;&amp; r.json.particle_effect.components['minecraft:particle_appearance_lighting'] != null ? '接受环境光' : '全亮'}}）</option><option value="ambient">接受环境光照</option><option value="unlit">全亮（忽略环境光照）</option></select></label><p>作用于所有引用此粒子的特效。覆盖设置只写入生成的资源，不改源 JSON。无光影时全亮不受环境光和方向光影响；开启光影后的表现由光影包决定。保存工程绑定后在游戏内 reload 测试。</p></div><button @click="openParticle(r)">编辑粒子 JSON</button></div></div>
+          <div v-if="tab==='particles'"><div v-for="r in p.particles" class="vfx-particle"><strong>{{r.path}}</strong><p>源 ID：{{r.id || '未设置'}}（导出时自动生成独立 ID）</p><label>粒子贴图<select v-model="r.texture"><option value="">未绑定</option><option v-for="t in p.textures" :value="t.key">{{t.path}}</option></select></label><div class="vfx-lighting"><label>粒子光照<select v-model="r.lighting"><option value="source">跟随源 JSON（{{r.json.particle_effect.components &amp;&amp; r.json.particle_effect.components['minecraft:particle_appearance_lighting'] != null ? '接受环境光' : '全亮'}}）</option><option value="ambient">接受环境光照</option><option value="unlit">全亮（忽略环境光照）</option><option value="texture">贴图原色（实验：需配套 eyelib）</option></select></label><p>作用于所有引用此粒子的特效。覆盖设置只写入生成的资源，不改源 JSON。无光影时全亮不受环境光和方向光影响；普通全亮在光影下的表现由光影包决定。原色模式保留粒子 tint 和透明度，在光影主要合成后绘制，不产生辉光。保存工程绑定后在游戏内 reload 测试。</p></div><button @click="openParticle(r)">编辑粒子 JSON</button></div></div>
           <table v-if="tab==='assets'"><tr><th>资产类型</th><th>文件</th></tr><tr v-for="a in p.assets"><td>{{a.type}}</td><td>{{a.path}}</td></tr></table>
           <pre v-if="message" class="vfx-message">{{message}}</pre><details v-if="p.warnings.length"><summary>导入提示（{{p.warnings.length}}）</summary><p v-for="w in p.warnings">{{w}}</p></details>
         </div>`
@@ -1747,7 +1766,7 @@
   const pluginId = registered.yesstevevfx_studio ? 'yesstevevfx_studio' : (loadingLocal || 'yesstevevfx_studio');
   pluginApi.register(pluginId, {
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
-    icon: 'auto_awesome', version: '1.0.0-pre.2-audio.6', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
+    icon: 'auto_awesome', version: '1.0.0-pre.2-audio.7', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);

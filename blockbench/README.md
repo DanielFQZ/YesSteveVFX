@@ -64,6 +64,16 @@ manifest.json → effects/*.json → client entity
 
 模型全亮只提供最大光照值，表面仍可能有方向明暗；粒子全亮在无光影时忽略环境光与方向光，开启光影后表现由光影包决定。这些选项不会产生 Bloom 光晕、照亮附近方块或保证不投影。Blockbench 预览不等同于 Minecraft/光影包的光照，最终以游戏实测为准。
 
+`audio.7` 新增实验性 **贴图原色**，需要配套 eyelib 的 `feat/texture-color-material` 测试构建（Forge 1.20.1），普通上游构建不支持：
+
+- 模型：在 **特效绑定** 勾选 **贴图原色**；该模式优先于“模型全亮”，去掉环境光、分面方向光、雾及受击 overlay，保留动画 tint 和 alpha。
+- 粒子：在 **粒子与贴图 → 粒子光照** 选择 **贴图原色**；导出保持原有裁切、半透明或加法混合，不更改源粒子 JSON。
+- 点击保存工程绑定，客户端执行 `/vfx_client reload`，再播放。替换 eyelib JAR 后必须先完整重启游戏。
+- 该材质在光影主要合成后绘制，不参与光影反射、Bloom 或场景照明。墙体提供深度遮挡，但水/玻璃的交叉排序、折射、TAA 边缘以及额外屏幕后处理需要针对光影包实测；它不是通用 PBR 自发光材质。
+- 透明像素与背景混合，粒子/动画设置的 tint 仍会染色；“原色”不表示忽略创作者设定的颜色和透明度。
+
+手写资源时，实体 `description.materials.default` 可设为 `eyelib:texture_unlit`。粒子 `basic_render_parameters.material` 可使用同名半透明材质，或 `eyelib:texture_unlit_alpha`（裁切）、`eyelib:texture_unlit_add`（加法）、`eyelib:texture_unlit_opaque`（不透明）。可视化导出会自动选择对应变体。
+
 ## 保存和共享动画
 
 - **文件 → 保存模型**直接写回源 geo，并保留同文件内其它 geometry。Ctrl+S 如果绑定为“保存项目”，保存的是 bbmodel，请使用明确的“保存模型”菜单。
