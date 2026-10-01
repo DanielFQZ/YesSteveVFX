@@ -1,6 +1,6 @@
 # YesSteveVFX Studio（Blockbench 插件）
 
-桌面版 Blockbench 插件，用于管理一个特效包里的模型、动画、粒子、贴图与音效，编辑源文件，并生成 YesSteveVFX 使用的运行时包。当前插件版本：**1.0.0-pre.2-audio.4**。无需修改 Blockbench、YSM 或 eyelib。
+桌面版 Blockbench 插件，用于管理一个特效包里的模型、动画、粒子、贴图与音效，编辑源文件，并生成 YesSteveVFX 使用的运行时包。当前插件版本：**1.0.0-pre.2-audio.5**。无需修改 Blockbench、YSM 或 eyelib。
 
 音效入口是 **VFX → 音效管理**：导入单声道 OGG、试听、配置播放参数、复制 YSM 指令，并随包导出。命中绑定配置的是 YSM 当前模型的公开 `displayPath`、动画名和 YSS 判定段下标；YSS 只读取 YSM 模型并附加判定，随 `audio.json` 导出并由 VFX 的可选 YSS 桥接器使用。详见 [音效使用说明](../docs/AUDIO-USER-GUIDE.md)。
 
@@ -51,6 +51,16 @@ manifest.json → effects/*.json → client entity
 ```
 
 `vfx-project.json` 保存编辑器关系，不是游戏运行时依赖。已有版本 1 的别名绑定会迁移到逐事件绑定；迁移不能恢复本来就错误的旧绑定，仍需人工核对。
+
+## 光照对比测试
+
+使用 eyelib 已有能力，不需要替换 VFX 或 eyelib JAR：
+
+- **资产与绑定 → 特效绑定 → 模型全亮**：按特效设置。勾选后导出的渲染控制器使用 `ignore_lighting: true`，取消则接受正常环境光。共用一个模型的不同特效可以分别设置。
+- **资产与绑定 → 粒子与贴图 → 粒子光照**：可选“跟随源 JSON”“接受环境光照”“全亮”。默认保留源文件行为，界面显示源文件当前是环境光还是全亮。接受环境光会在生成副本中添加 `minecraft:particle_appearance_lighting`，全亮会移除它。设置随工程保存，不修改源粒子 JSON；所有引用同一个粒子资源的特效共享该选项。
+- 点击 **保存工程绑定** 更新当前包的运行时资源。如果编辑的是客户端目录外的工程，再 **导出到客户端**。随后在游戏中执行 `/vfx_client reload`，停止并重新播放特效，在白天/暗处对比；开启 Oculus 后再单独对比。
+
+模型全亮只提供最大光照值，表面仍可能有方向明暗；粒子全亮在无光影时忽略环境光与方向光，开启光影后表现由光影包决定。这些选项不会产生 Bloom 光晕、照亮附近方块或保证不投影。Blockbench 预览不等同于 Minecraft/光影包的光照，最终以游戏实测为准。
 
 ## 保存和共享动画
 
