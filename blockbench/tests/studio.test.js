@@ -371,3 +371,29 @@ test('runtime publish can clear the manifest after deleting the last effect', t 
   const manifest = JSON.parse(fs.readFileSync(path.join(project.root, 'manifest.json')));
   assert.deepEqual(manifest.effects, []);
 });
+test('export rejects box UV outside the declared canvas before writing a runtime pack', t => {
+  const project = projectFixture(t), effect = project.effects[1];
+  project.effects = [effect]; effect.model = project.models[0].key; effect.texture = project.textures[0].key;
+  const geometry = project.models[0].geometry;
+  geometry.description.texture_width = 1; geometry.description.texture_height = 1;
+  const before = JSON.stringify(geometry);
+  assert.throws(() => core.build(project), /方盒 UV.*1×1/);
+  assert.throws(() => core.publishRuntime(project), /方盒 UV/);
+  assert.ok(!fs.existsSync(path.join(project.root, 'manifest.json')));
+  assert.equal(JSON.stringify(geometry), before, 'do not guess dimensions or mutate UVs');
+  geometry.description.texture_width = 16; geometry.description.texture_height = 16;
+  assert.ok(core.build(project).size > 0, 'a valid logical canvas may differ from PNG size');
+  geometry.bones[0].cubes[0].uv[0] = -1;
+  assert.throws(() => core.build(project), /方盒 UV/);
+});
+test('new editable models support explicit UV dimensions instead of the carrier placeholder', t => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'vfx-uv-size-'));
+  t.after(() => fs.rmSync(parent, {recursive: true, force: true}));
+  const root = core.createEmptyPack(parent, {packId: 'uv_pack', textureWidth: 2048, textureHeight: 1024});
+  const desc = core.scan(root).models[0].geometry.description;
+  assert.equal(desc.texture_width, 2048); assert.equal(desc.texture_height, 1024);
+  const defaults = core.scan(core.createEmptyPack(parent, {packId: 'defaults'})).models[0].geometry.description;
+  assert.equal(defaults.texture_width, 16); assert.equal(defaults.texture_height, 16);
+  assert.throws(() => core.createEmptyPack(parent, {packId: 'bad', textureWidth: 0}), /UV 尺寸/);
+  assert.ok(!fs.existsSync(path.join(parent, 'bad')));
+});

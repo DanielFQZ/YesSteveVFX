@@ -308,7 +308,10 @@
         if (!Number.isInteger(Number(effect.duration)) || effect.duration < 1 || effect.duration > 72000) throw new Error('持续时间必须为 1–72000 tick');
         if (effect.modelUnresolved && !effect.model) throw new Error('模型关系未确认，请在模型与动画绑定中选择模型或明确设为仅粒子');
         const model = effect.model ? find(project.models, effect.model, '模型') : null;
-        if (model) find(project.textures, effect.texture, '模型贴图');
+        if (model) {
+          find(project.textures, effect.texture, '模型贴图');
+          validateModelUv(model.geometry, model.path);
+        }
         const animation = effect.animation ? find(project.animations, effect.animation, '动画') : null;
         const timeKeys = Object.keys(animation?.animation.particle_effects || {});
         if (timeKeys.some(t => !Number.isFinite(Number(t))) || new Set(timeKeys.map(Number)).size !== timeKeys.length) throw new Error('粒子事件时间非法或重复（例如同时存在 0 和 0.0），请在源动画中合并该时间点');
@@ -326,6 +329,22 @@
     return errors;
   }
   const emptyGeometry = () => ({description: {identifier: 'geometry.vfx_preview', texture_width: 1, texture_height: 1}, bones: [{name: 'root', pivot: [0, 0, 0]}]});
+  function validateModelUv(geometry, file) {
+    const {texture_width: width, texture_height: height} = geometry.description || {};
+    if (![width, height].every(v => Number.isInteger(v) && v > 0)) throw new Error(`${file}：模型 UV 尺寸必须是正整数`);
+    function checkBone(bone) {
+      for (const cube of bone.cubes || []) {
+        if (!Array.isArray(cube.uv) || !Array.isArray(cube.size)) continue;
+        const [u, v] = cube.uv, [x, y, z] = cube.size;
+        const right = u + 2 * (Math.abs(x) + Math.abs(z)), bottom = v + Math.abs(y) + Math.abs(z);
+        if (![u, v, x, y, z, right, bottom].every(Number.isFinite) || u < 0 || v < 0 || right > width || bottom > height) {
+          throw new Error(`${file}：骨骼 ${bone.name || '(未命名)'} 的方盒 UV 超出模型声明的 ${width}×${height}，需要至少 ${Math.ceil(right)}×${Math.ceil(bottom)}。请核对原始模型的 UV 尺寸，在 Blockbench 项目设置中修正并保存模型；PNG 像素尺寸不一定等于 UV 尺寸。向空工程导入模型可能只缩放逐面 UV，不能只改尺寸而忽略 UV 坐标。`);
+        }
+      }
+      for (const child of bone.children || []) checkBone(child);
+    }
+    for (const bone of geometry.bones || []) checkBone(bone);
+  }
   function build(project, options = {}) {
     const errors = validate(project, undefined, options);
     if (errors.length) throw new Error(errors.join('\n'));
@@ -531,6 +550,12 @@
     const geometryStem = path.basename(modelFile, '.geo.json').toLowerCase().replace(/[^a-z0-9._-]/g, '_');
     const geometrySuffix = /[a-z0-9]/.test(geometryStem) ? geometryStem : 'model';
     const geometry = emptyGeometry();
+    // A render-only empty carrier uses 1x1. An editable project needs its own
+    // declared UV canvas, independent of the PNG's physical resolution.
+    const textureWidth = Number(options.textureWidth ?? 16), textureHeight = Number(options.textureHeight ?? 16);
+    if (![textureWidth, textureHeight].every(v => Number.isInteger(v) && v >= 1 && v <= 16384)) throw new Error('模型 UV 尺寸必须为 1–16384 的整数');
+    geometry.description.texture_width = textureWidth;
+    geometry.description.texture_height = textureHeight;
     geometry.description.identifier = `geometry.${packId}.${geometrySuffix}`;
     const modelPath = `models/${modelFile}`;
     const animationPath = `animations/${animationFile}`;
@@ -1474,6 +1499,8 @@
         displayName: {label: '显示名称', description: '显示名称可以使用中文。', type: 'text', value: '新特效包'},
         modelFile: {label: '初始模型文件名', description: '支持中文；可填写 .geo 或 .geo.json，插件会自动规范后缀。', type: 'text', value: 'model'},
         animationFile: {label: '初始动画文件名', description: '支持中文；可填写 .animation 或 .animation.json，插件会自动规范后缀。', type: 'text', value: 'animation'},
+        textureWidth: {label: '模型 UV 宽度', description: '导入已有模型前请填写原工程的 UV 宽度，不一定等于 PNG 像素宽度。', type: 'number', value: 16, min: 1, max: 16384},
+        textureHeight: {label: '模型 UV 高度', description: '应与原模型 texture_height 一致；导入后改尺寸可能还需修复 UV 坐标。', type: 'number', value: 16, min: 1, max: 16384},
         open: {label: '创建后立即打开工程', type: 'checkbox', value: true}
       },
       onConfirm(values) {
@@ -1672,7 +1699,7 @@
   const pluginId = registered.yesstevevfx_studio ? 'yesstevevfx_studio' : (loadingLocal || 'yesstevevfx_studio');
   pluginApi.register(pluginId, {
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
-    icon: 'auto_awesome', version: '1.0.0-pre.2-audio.2', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
+    icon: 'auto_awesome', version: '1.0.0-pre.2-audio.3', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);
