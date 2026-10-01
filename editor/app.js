@@ -624,7 +624,7 @@ async function generatedEntity(files, effectName, animationId) {
   for (const [alias, id] of aliases) particles[alias] = id;
   const description = {
     identifier: `yesstevevfx:${effectName}`,
-    materials: { default: 'entity_alphatest' },
+    materials: { default: 'entity_translucent' },
     textures: { default: texture },
     geometry: { default: geometry },
     particle_effects: particles,
@@ -638,7 +638,7 @@ async function generatedEntity(files, effectName, animationId) {
   const output = new Map(files);
   output.set(`assets/eyelib/entity/${effectName}.json`, new Blob([JSON.stringify(entity, null, 2)], { type: 'application/json' }));
   if (!renderPath) {
-    const controller = { render_controllers: { [renderController]: { geometry: 'Geometry.default', materials: ['Material.default'], textures: ['Texture.default'] } } };
+    const controller = { render_controllers: { [renderController]: { geometry: 'Geometry.default', materials: [{ '*': 'Material.default' }], textures: ['Texture.default'] } } };
     output.set(`assets/eyelib/render_controllers/${effectName}.json`, new Blob([JSON.stringify(controller, null, 2)], { type: 'application/json' }));
   }
   return { output, entityPath: `assets/eyelib/entity/${effectName}.json` };

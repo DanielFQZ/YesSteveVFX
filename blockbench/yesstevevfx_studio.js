@@ -455,7 +455,9 @@
     for (const effect of (audioOnlyProject(project) ? [] : project.effects.filter(e => e.enabled))) {
       const base = `${options.generated ? 'vfx_generated.' : ''}${pack}.${effect.name}`;
       const geometry = geometryResource(effect);
-      const entity = {identifier: `yesstevevfx:${resourcePack}/${effect.name}`, materials: {default: 'entity_alphatest'},
+      // Preserve the translucent rendering previously supplied by eyelib's
+      // fallback component, while using a real controller/material binding.
+      const entity = {identifier: `yesstevevfx:${resourcePack}/${effect.name}`, materials: {default: 'entity_translucent'},
         geometry: {default: geometry.id}, textures: {}, particle_effects: {},
         render_controllers: [`controller.render.yesstevevfx.${base}`]};
       if (effect.model) entity.textures.default = putTexture(effect.texture);
@@ -485,7 +487,7 @@
       const entityPath = `entity/${resourcePack}/${effect.name}.json`;
       json(entityPath, {'minecraft:client_entity': {description: entity}});
       json(`render_controllers/${resourcePack}/${effect.name}.json`, {render_controllers: {
-        [entity.render_controllers[0]]: {geometry: 'Geometry.default', materials: ['Material.default'], textures: ['Texture.default'], ignore_lighting: effect.ignoreLighting ?? false}
+        [entity.render_controllers[0]]: {geometry: 'Geometry.default', materials: [{'*': 'Material.default'}], textures: ['Texture.default'], ignore_lighting: effect.ignoreLighting ?? false}
       }});
       const effectPath = `effects/${options.generated ? 'vfx_generated/' : ''}${effect.name}.json`;
       effectPaths.push(effectPath);
@@ -1745,7 +1747,7 @@
   const pluginId = registered.yesstevevfx_studio ? 'yesstevevfx_studio' : (loadingLocal || 'yesstevevfx_studio');
   pluginApi.register(pluginId, {
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
-    icon: 'auto_awesome', version: '1.0.0-pre.2-audio.5', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
+    icon: 'auto_awesome', version: '1.0.0-pre.2-audio.6', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);

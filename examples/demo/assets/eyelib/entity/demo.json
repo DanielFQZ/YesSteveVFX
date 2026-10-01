@@ -1,7 +1,7 @@
 {
  "minecraft:client_entity": {"description": {
   "identifier":"yesstevevfx:demo",
-  "materials":{"default":"entity_alphatest"},
+  "materials":{"default":"entity_translucent"},
   "textures":{"default":"yesstevevfx:textures/demo"},
   "geometry":{"default":"geometry.yesstevevfx.demo"},
   "animations":{"demo":"animation.yesstevevfx.demo"},

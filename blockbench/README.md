@@ -1,6 +1,6 @@
 # YesSteveVFX Studio（Blockbench 插件）
 
-桌面版 Blockbench 插件，用于管理一个特效包里的模型、动画、粒子、贴图与音效，编辑源文件，并生成 YesSteveVFX 使用的运行时包。当前插件版本：**1.0.0-pre.2-audio.5**。无需修改 Blockbench、YSM 或 eyelib。
+桌面版 Blockbench 插件，用于管理一个特效包里的模型、动画、粒子、贴图与音效，编辑源文件，并生成 YesSteveVFX 使用的运行时包。当前插件版本：**1.0.0-pre.2-audio.6**。无需修改 Blockbench、YSM 或 eyelib。
 
 音效入口是 **VFX → 音效管理**：导入单声道 OGG、试听、配置播放参数、复制 YSM 指令，并随包导出。命中绑定配置的是 YSM 当前模型的公开 `displayPath`、动画名和 YSS 判定段下标；YSS 只读取 YSM 模型并附加判定，随 `audio.json` 导出并由 VFX 的可选 YSS 桥接器使用。详见 [音效使用说明](../docs/AUDIO-USER-GUIDE.md)。
 
@@ -55,6 +55,8 @@ manifest.json → effects/*.json → client entity
 ## 光照对比测试
 
 使用 eyelib 已有能力，不需要替换 VFX 或 eyelib JAR：
+
+`audio.6` 修复了控制器材质绑定格式：使用 `materials: [{"*": "Material.default"}]`，其中 `*` 匹配所有骨骼；字符串数组或 `default` 骨骼名无法正确绑定。旧导出包需重新保存运行时资源或重新导出，否则 eyelib 的兜底组件会忽略模型全亮。默认材质使用 `entity_translucent`，保留先前兜底路径的半透明效果。
 
 - **资产与绑定 → 特效绑定 → 模型全亮**：按特效设置。勾选后导出的渲染控制器使用 `ignore_lighting: true`，取消则接受正常环境光。共用一个模型的不同特效可以分别设置。
 - **资产与绑定 → 粒子与贴图 → 粒子光照**：可选“跟随源 JSON”“接受环境光照”“全亮”。默认保留源文件行为，界面显示源文件当前是环境光还是全亮。接受环境光会在生成副本中添加 `minecraft:particle_appearance_lighting`，全亮会移除它。设置随工程保存，不修改源粒子 JSON；所有引用同一个粒子资源的特效共享该选项。

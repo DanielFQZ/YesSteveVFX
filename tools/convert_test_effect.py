@@ -52,7 +52,7 @@ def main() -> None:
             "minecraft:client_entity": {
                 "description": {
                     "identifier": f"yesstevevfx:{name}",
-                    "materials": {"default": "entity_alphatest"},
+                    "materials": {"default": "entity_translucent"},
                     "textures": {"default": "yesstevevfx:textures/test"},
                     "geometry": {"default": "geometry.yesstevevfx.test"},
                     "animations": {"test": f"animation.yesstevevfx.{name}"},
@@ -73,7 +73,7 @@ def main() -> None:
         "render_controllers": {
             "controller.render.yesstevevfx.test": {
                 "geometry": "Geometry.default",
-                "materials": [{"default": "Material.default"}],
+                "materials": [{"*": "Material.default"}],
                 "textures": ["Texture.default"],
             }
         },

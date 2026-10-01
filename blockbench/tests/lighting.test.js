@@ -33,6 +33,11 @@ test('lighting export preserves defaults, supports both overrides and never chan
   assert.deepEqual(source.map(p => Object.hasOwn(p.particle_effect.components, lightingKey)), [true, false]);
   a.lighting = 'unlit'; b.lighting = 'ambient'; project.effects[0].ignoreLighting = true;
   const output = core.build(project);
+  const controller = Object.values(outputDocuments(output, 'render_controllers')[0].render_controllers)[0];
+  // Bedrock materials map bone patterns to material aliases. A string array
+  // is silently decoded as empty by eyelib and triggers an unlit=false fallback.
+  assert.deepEqual(controller.materials, [{'*': 'Material.default'}]);
+  assert.equal(outputDocuments(output, 'entity')[0]['minecraft:client_entity'].description.materials.default, 'entity_translucent');
   assert.deepEqual(outputDocuments(output, 'particles').map(p => Object.hasOwn(p.particle_effect.components, lightingKey)), [false, true]);
   assert.equal(Object.values(outputDocuments(output, 'render_controllers')[0].render_controllers)[0].ignore_lighting, true);
   assert.equal(JSON.stringify(project.particles.map(p => p.json)), before);

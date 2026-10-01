@@ -5,7 +5,7 @@
       "geometry": "Geometry.default",
       "materials": [
         {
-          "default": "Material.default"
+          "*": "Material.default"
         }
       ],
       "textures": [
