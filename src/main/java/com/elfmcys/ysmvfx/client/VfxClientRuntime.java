@@ -8,6 +8,7 @@ import com.elfmcys.ysmvfx.client.noop.UnavailableEffectBackend;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.Vec3;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,6 +24,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class VfxClientRuntime {
     private static final Logger LOGGER = LoggerFactory.getLogger(YesSteveVfx.MOD_ID + ".client");
     private static final Map<Key, RunningEffect> ACTIVE = new ConcurrentHashMap<>();
+    private record HitKey(UUID source, String slot) { }
+    private static final Map<HitKey, HitWatch> HIT_WATCHES = new ConcurrentHashMap<>();
     private static final VfxActionQueue PENDING = new VfxActionQueue();
     private static volatile Map<String, EffectAssetBundle> bundles = Map.of();
     private static volatile EffectBackend backend = UnavailableEffectBackend.INSTANCE;
@@ -42,6 +45,7 @@ public final class VfxClientRuntime {
         PENDING.clear();
         previous.unload();
         ACTIVE.clear();
+        HIT_WATCHES.clear();
         backend = replacement;
         loaded = false;
     }
@@ -144,6 +148,37 @@ public final class VfxClientRuntime {
         return accepted;
     }
 
+    /** Arms an animation-defined confirmed-hit window. Empty output IDs are allowed. */
+    public static boolean enqueueHitBegin(UUID sourceId, String slot, String sound, String effect, String effectSlot) {
+        if (sourceId == null || !validHitSlot(slot) || !validOptionalId(sound) || !validOptionalId(effect)
+                || !validHitSlot(effectSlot)) return false;
+        HIT_WATCHES.put(new HitKey(sourceId, slot), new HitWatch(sound, effect, effectSlot));
+        return true;
+    }
+
+    public static boolean enqueueHitEnd(UUID sourceId, String slot) {
+        if (sourceId == null || !validHitSlot(slot)) return false;
+        return HIT_WATCHES.remove(new HitKey(sourceId, slot)) != null;
+    }
+
+    public static Map<String, HitWatch> consumeHit(UUID sourceId, long sequence) {
+        if (sourceId == null) return Map.of();
+        Map<String, HitWatch> result = new java.util.LinkedHashMap<>();
+        for (var entry : HIT_WATCHES.entrySet()) {
+            if (entry.getKey().source().equals(sourceId) && entry.getValue().accept(sequence))
+                result.put(entry.getKey().slot(), entry.getValue());
+        }
+        return result;
+    }
+
+    private static boolean validHitSlot(String slot) {
+        return slot != null && !slot.isBlank() && slot.length() <= 64 && slot.matches("[A-Za-z0-9_.-]+");
+    }
+
+    private static boolean validOptionalId(String id) {
+        return id != null && (id.isEmpty() || id.matches("[a-z0-9_.-]+:[a-z0-9_./-]+"));
+    }
+
     private static boolean hasActiveSlot(VfxActionQueue.Key key) {
         return ACTIVE.containsKey(new Key(key.sourceId(), key.slot()));
     }
@@ -171,10 +206,26 @@ public final class VfxClientRuntime {
         if (bundle == null || source == null || source.isRemoved()) {
             return false;
         }
+        return playInternal(sourceId, effectId, slot, bundle, source.position(), source.getYRot(), source.getXRot(), level, false);
+    }
+
+    /** Starts a hit effect at a captured target position; the carrier remains world-fixed. */
+    public static boolean playHitEffect(UUID ownerId, String effectId, String slot, Vec3 position, long sequence) {
+        Minecraft minecraft = Minecraft.getInstance();
+        ClientLevel level = minecraft.level;
+        if (level == null || ownerId == null || effectId == null || slot == null || position == null) return false;
+        String uniqueSlot = slot + "_" + Long.toUnsignedString(sequence);
+        if (uniqueSlot.length() > 64) uniqueSlot = uniqueSlot.substring(0, 64);
+        EffectAssetBundle bundle = bundles.get(effectId);
+        if (bundle == null) return false;
+        return playInternal(ownerId, effectId, uniqueSlot, bundle, position, 0F, 0F, level, true);
+    }
+
+    private static boolean playInternal(UUID sourceId, String effectId, String slot, EffectAssetBundle bundle, Vec3 position,
+                                         float yaw, float pitch, ClientLevel level, boolean fixedPosition) {
         EffectPlayRequest request;
         try {
-            request = new EffectPlayRequest(sourceId, slot, source.position(),
-                    source.getYRot(), source.getXRot(), level.getGameTime());
+            request = new EffectPlayRequest(sourceId, slot, position, yaw, pitch, level.getGameTime());
         } catch (IllegalArgumentException exception) {
             return false;
         }
@@ -190,7 +241,7 @@ public final class VfxClientRuntime {
                 return false;
             }
             ACTIVE.put(key, new RunningEffect(handle, effectId, request.clientTick(),
-                    bundle.definition().durationTicks()));
+                    bundle.definition().durationTicks(), fixedPosition));
             return true;
         } catch (Exception exception) {
             LOGGER.error("Could not start effect {}", effectId, exception);
@@ -246,16 +297,18 @@ public final class VfxClientRuntime {
         for (var entry : ACTIVE.entrySet()) {
             Key key = entry.getKey();
             RunningEffect running = entry.getValue();
-            Entity source = findEntity(level, key.sourceId());
-            if (source == null || source.isRemoved()) {
+            Entity source = running.fixedPosition() ? null : findEntity(level, key.sourceId());
+            if (!running.fixedPosition() && (source == null || source.isRemoved())) {
                 if (ACTIVE.remove(key, running)) {
                     backend.stop(running.handle());
                 }
                 continue;
             }
-            EffectPlayRequest request = new EffectPlayRequest(key.sourceId(), key.slot(), source.position(),
-                    source.getYRot(), source.getXRot(), now);
-            backend.update(running.handle(), request);
+            if (!running.fixedPosition()) {
+                EffectPlayRequest request = new EffectPlayRequest(key.sourceId(), key.slot(), source.position(),
+                        source.getYRot(), source.getXRot(), now);
+                backend.update(running.handle(), request);
+            }
             if (now - running.startTick() >= running.durationTicks()
                     && ACTIVE.remove(key, running)) {
                 backend.stop(running.handle());
@@ -269,6 +322,7 @@ public final class VfxClientRuntime {
             backend.stop(running.handle());
         }
         ACTIVE.clear();
+        HIT_WATCHES.clear();
         backend.clear();
     }
 
@@ -303,6 +357,6 @@ public final class VfxClientRuntime {
     }
 
     private record RunningEffect(EffectHandle handle, String effectId,
-                                 long startTick, int durationTicks) {
+                                 long startTick, int durationTicks, boolean fixedPosition) {
     }
 }

@@ -26,7 +26,18 @@ public final class VfxClientPacketHandler {
         if (!Double.isFinite(packet.x()) || !Double.isFinite(packet.y()) || !Double.isFinite(packet.z())
                 || packet.segmentIndex() < 0 || packet.segmentIndex() > 65535) return;
         if (SEEN.putIfAbsent(packet.sequence(), Boolean.TRUE) != null) return;
-        AudioRuntime.acceptHit(packet.attacker(), packet.target(), packet.modelId(), packet.animation(),
-                packet.segmentIndex(), new net.minecraft.world.phys.Vec3(packet.x(), packet.y(), packet.z()), packet.sequence());
+        var position = new net.minecraft.world.phys.Vec3(packet.x(), packet.y(), packet.z());
+        var watches = VfxClientRuntime.consumeHit(packet.attacker(), packet.sequence());
+        var target = VfxClientRuntime.findEntity(minecraft.level, packet.target());
+        if (watches.isEmpty()) {
+            AudioRuntime.acceptHit(packet.attacker(), packet.target(), packet.modelId(), packet.animation(),
+                    packet.segmentIndex(), position, packet.sequence());
+            return;
+        }
+        for (var watch : watches.values()) {
+            if (!watch.sound().isEmpty()) AudioRuntime.playHitSound(packet.attacker(), watch.sound(), position, target, packet.sequence());
+            if (!watch.effect().isEmpty())
+                VfxClientRuntime.playHitEffect(packet.attacker(), watch.effect(), watch.effectSlot(), position, packet.sequence());
+        }
     }
 }

@@ -47,7 +47,8 @@ public final class YsmIntegration {
 
     static void registerFunctions(ContextBinding binding) {
         // Never overwrite another extension or a future built-in implementation.
-        for (String name : new String[]{"vfx_play", "vfx_stop", "vfx_set", "vfx_sound_play", "vfx_sound_stop"}) {
+        for (String name : new String[]{"vfx_play", "vfx_stop", "vfx_set", "vfx_sound_play", "vfx_sound_stop",
+                "vfx_hit_begin", "vfx_hit_end"}) {
             if (binding.getProperty(name) != null) {
                 throw new IllegalStateException("YSM control function already registered: ctrl." + name);
             }
@@ -66,6 +67,8 @@ public final class YsmIntegration {
         binding.function("vfx_play", fixedArity(YsmIntegration::play, 2));
         binding.function("vfx_stop", fixedArity(YsmIntegration::stop, 1));
         binding.function("vfx_set", fixedArity(YsmIntegration::set, 3));
+        binding.function("vfx_hit_begin", fixedArity(YsmIntegration::hitBegin, 4));
+        binding.function("vfx_hit_end", fixedArity(YsmIntegration::hitEnd, 1));
     }
 
     private static Object play(ExecutionContext<?> execution, Function.ArgumentCollection arguments) {
@@ -109,6 +112,19 @@ public final class YsmIntegration {
         LOGGER.info("YSM ctrl.vfx_set slot={} name={} value={} source={} accepted={} thread={}",
                 slot, name, value, source, accepted, Thread.currentThread().getName());
         return accepted ? 1F : 0F;
+    }
+
+    private static Object hitBegin(ExecutionContext<?> execution, Function.ArgumentCollection arguments) {
+        UUID source = actionSource(execution, arguments, 4);
+        if (source == null) return 0F;
+        return VfxClientRuntime.enqueueHitBegin(source,
+                arguments.getAsString(execution, 0), arguments.getAsString(execution, 1),
+                arguments.getAsString(execution, 2), arguments.getAsString(execution, 3)) ? 1F : 0F;
+    }
+
+    private static Object hitEnd(ExecutionContext<?> execution, Function.ArgumentCollection arguments) {
+        UUID source = actionSource(execution, arguments, 1);
+        return source != null && VfxClientRuntime.enqueueHitEnd(source, arguments.getAsString(execution, 0)) ? 1F : 0F;
     }
 
     private static Function fixedArity(Function delegate, int arity) {

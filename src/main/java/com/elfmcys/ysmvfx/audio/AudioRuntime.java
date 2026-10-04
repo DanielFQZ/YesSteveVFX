@@ -35,7 +35,11 @@ public final class AudioRuntime {
                                   Vec3 position, Entity target, long sequence) {
         if (!ready || owner == null || position == null) return false;
         String id = catalog.hits().get(new AudioCatalog.HitKey(modelId, animation, segmentIndex));
-        if (id == null) return false;
+        return id != null && playHitSound(owner, id, position, target, sequence);
+    }
+
+    public static boolean playHitSound(UUID owner, String id, Vec3 position, Entity target, long sequence) {
+        if (!ready || owner == null || id == null || position == null) return false;
         var sound = catalog.sounds().get(id);
         var event = VfxAudioResourcePack.current().events().get(id);
         if (sound == null || event == null) return false;
