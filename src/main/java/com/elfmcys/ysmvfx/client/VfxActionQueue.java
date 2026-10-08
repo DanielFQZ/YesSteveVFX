@@ -14,12 +14,20 @@ final class VfxActionQueue {
     private final Map<Key, Boolean> pendingSlots = new HashMap<>();
 
     synchronized boolean play(UUID source, String effect, String slot) {
+        return play(source, effect, slot, null);
+    }
+
+    synchronized boolean playFixed(UUID source, String effect, String slot, Transform snapshot) {
+        return snapshot != null && play(source, effect, slot, snapshot);
+    }
+
+    private boolean play(UUID source, String effect, String slot, Transform snapshot) {
         if (source == null || effect == null || effect.isBlank() || !validSlot(slot)
                 || pending.size() >= CAPACITY) {
             return false;
         }
         Key key = new Key(source, slot);
-        pending.add(new Play(key, effect));
+        pending.add(new Play(key, effect, snapshot));
         pendingSlots.put(key, true);
         return true;
     }
@@ -79,13 +87,22 @@ final class VfxActionQueue {
                 && name.matches("[A-Za-z0-9_.-]+") && Double.isFinite(value);
     }
 
+    record Transform(double x, double y, double z, float yaw, float pitch) {
+        Transform {
+            if (!Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)
+                    || !Float.isFinite(yaw) || !Float.isFinite(pitch))
+                throw new IllegalArgumentException("Fixed effect transform must be finite");
+        }
+    }
+
     record Key(UUID sourceId, String slot) { }
 
     sealed interface Action permits Play, Stop, SetParameter {
         Key key();
     }
 
-    record Play(Key key, String effectId) implements Action { }
+    /** A non-null snapshot fixes the root at the instruction-frame transform. */
+    record Play(Key key, String effectId, Transform snapshot) implements Action { }
     record Stop(Key key) implements Action { }
     record SetParameter(Key key, String name, double value) implements Action { }
 }

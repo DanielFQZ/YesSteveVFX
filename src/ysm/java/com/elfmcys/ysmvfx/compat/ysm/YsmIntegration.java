@@ -47,7 +47,7 @@ public final class YsmIntegration {
 
     static void registerFunctions(ContextBinding binding) {
         // Never overwrite another extension or a future built-in implementation.
-        for (String name : new String[]{"vfx_play", "vfx_stop", "vfx_set", "vfx_sound_play", "vfx_sound_stop",
+        for (String name : new String[]{"vfx_play", "vfx_play_fixed", "vfx_stop", "vfx_set", "vfx_sound_play", "vfx_sound_stop",
                 "vfx_hit_begin", "vfx_hit_end"}) {
             if (binding.getProperty(name) != null) {
                 throw new IllegalStateException("YSM control function already registered: ctrl." + name);
@@ -65,6 +65,11 @@ public final class YsmIntegration {
                     arguments.getAsString(execution,0)) ? 1F : 0F;
         }, 1));
         binding.function("vfx_play", fixedArity(YsmIntegration::play, 2));
+        binding.function("vfx_play_fixed", fixedArity((execution, arguments) -> {
+            Entity source = actionEntity(execution, arguments, 2);
+            return source != null && VfxClientRuntime.enqueuePlayFixed(source,
+                    arguments.getAsString(execution, 0), arguments.getAsString(execution, 1)) ? 1F : 0F;
+        }, 2));
         binding.function("vfx_stop", fixedArity(YsmIntegration::stop, 1));
         binding.function("vfx_set", fixedArity(YsmIntegration::set, 3));
         binding.function("vfx_hit_begin", fixedArity(YsmIntegration::hitBegin, 4));
@@ -143,6 +148,12 @@ public final class YsmIntegration {
 
     private static UUID actionSource(ExecutionContext<?> execution,
                                      Function.ArgumentCollection arguments, int arity) {
+        Entity entity = actionEntity(execution, arguments, arity);
+        return entity == null ? null : entity.getUUID();
+    }
+
+    private static Entity actionEntity(ExecutionContext<?> execution,
+                                       Function.ArgumentCollection arguments, int arity) {
         if (arguments.size() != arity) {
             LOGGER.debug("YSM VFX function rejected: expected {} arguments, got {}", arity, arguments.size());
             return null;
@@ -162,6 +173,6 @@ public final class YsmIntegration {
             return null;
         }
         // Keep no Entity, Molang context, argument view or AST alive after this invocation.
-        return entity.getUUID();
+        return entity;
     }
 }

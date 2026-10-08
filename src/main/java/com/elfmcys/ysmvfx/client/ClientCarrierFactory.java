@@ -22,6 +22,11 @@ public enum ClientCarrierFactory implements CarrierFactory {
         carrier.setId(id);
         carrier.moveTo(request.position().x, request.position().y, request.position().z,
                 request.yaw(), request.pitch());
+        // Fixed effects have no subsequent update to initialize living-entity rotations.
+        carrier.setYBodyRot(request.yaw());
+        carrier.setYHeadRot(request.yaw());
+        carrier.yBodyRotO = request.yaw();
+        carrier.yHeadRotO = request.yaw();
         level.putNonPlayerEntity(id, carrier);
         return carrier;
     }

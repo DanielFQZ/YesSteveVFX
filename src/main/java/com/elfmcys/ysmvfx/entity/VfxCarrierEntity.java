@@ -5,6 +5,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import net.minecraftforge.registries.DeferredRegister;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.RegistryObject;
@@ -15,6 +16,8 @@ import net.minecraftforge.fml.common.Mod;
 /** Marker armor-stand carrier; eyelib supplies the visible model through RenderData. */
 @Mod.EventBusSubscriber(modid = YesSteveVfx.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD)
 public final class VfxCarrierEntity extends ArmorStand {
+    /** 特效模型可远离载体实体；实体包围盒不能拿来裁剪模型本身。 */
+    private static final double RENDER_BOUNDS_RADIUS = 64.0;
     public static final DeferredRegister<EntityType<?>> TYPES =
             DeferredRegister.create(ForgeRegistries.ENTITY_TYPES, YesSteveVfx.MOD_ID);
     public static final RegistryObject<EntityType<VfxCarrierEntity>> TYPE = TYPES.register(
@@ -35,11 +38,18 @@ public final class VfxCarrierEntity extends ArmorStand {
         return distance < 128.0 * 128.0;
     }
 
+    @Override
+    public AABB getBoundingBoxForCulling() {
+        return getBoundingBox().inflate(RENDER_BOUNDS_RADIUS);
+    }
+
     public VfxCarrierEntity(EntityType<? extends ArmorStand> type, Level level) {
         super(type, level);
         setNoGravity(true);
         setInvulnerable(true);
         noPhysics = true;
+        // 载体只负责进入 eyelib 的实体渲染入口，不能因自身 0.01³ 的包围盒被视锥裁剪。
+        noCulling = true;
     }
 
     @Override

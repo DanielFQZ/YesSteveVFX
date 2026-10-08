@@ -49,6 +49,22 @@ ctrl.vfx_sound_stop('swing');
 
 同一个来源实体的同一个 slot 再次播放会停止旧实例并创建新实例。返回 `1` 表示请求已接受并排入客户端执行队列，返回 `0` 表示参数、资源、后端或上下文不可用。
 
+### `ctrl.vfx_play_fixed(effect_id, slot)`
+
+原地播放完整特效：保存指令帧执行时来源实体的世界位置、朝向和俯仰，之后不跟随玩家移动或转身。模型动画和粒子自身运动仍正常执行（固定的是载体根变换，不是冻结粒子）。无需重新导出特效包。
+
+```molang
+ctrl.vfx_play_fixed('yesstevevfx:demo', 'skill_origin');
+```
+
+将它放在 YSM 动画第 0 帧，并安排在 Root 位移之前，即固定在动作起始位置；如果放在 0.5 秒，它记录的是 0.5 秒触发时的位置，不会倒查动作开始的位置。队列保存的是调用时的坐标值，不会因下一 tick 玩家已移动而改变出生点。
+
+与跟随播放共享 slot：同来源、同 slot 会替换旧特效；需要动作连段叠加时使用不同 slot。`ctrl.vfx_stop('skill_origin')` 和 `ctrl.vfx_set(...)` 同样可用。特效按配置寿命结束，玩家移开不会带走特效；退出世界/reload 会清理。
+
+独立测试：`/vfx_client play_fixed yesstevevfx:demo skill_origin`，随后走开并转身。对照使用 `/vfx_client play yesstevevfx:demo follow_test`。
+
+Blockbench → VFX → 资产与绑定，同时提供“复制跟随播放”和“复制原地播放”，直接粘贴到 YSM 动画的指令帧。
+
 ### `ctrl.vfx_stop(slot)`
 
 停止当前来源实体指定 slot 的 effect。返回 `1` 表示已接受，返回 `0` 表示该 slot 没有正在运行的实例或请求不合法。已经生成的粒子会按照粒子自身寿命结束；carrier、模型和动画实例会被清理。
@@ -67,11 +83,11 @@ ctrl.vfx_stop('main');
 
 ## 执行上下文和线程
 
-YSM 可能在 `YSM Worker` 线程评估模型动画。bridge 只保存来源实体 UUID、effect ID、slot 和参数，不保存 YSM entity、Molang context 或 AST，也不在动画评估期间修改实体集合。请求会在客户端 tick 的安全阶段按指令顺序执行。
+YSM 可能在 `YSM Worker` 线程评估模型动画。bridge 只保存来源实体 UUID、effect ID、slot、参数以及原地播放的坐标/朝向快照，不保存 YSM entity、Molang context 或 AST，也不在动画评估期间修改实体集合。请求会在客户端 tick 的安全阶段按指令顺序执行。
 
 函数只接受真实客户端实体的动画上下文，并且要求 YSM 当前允许产生动作效果。预览模型、fake player、普通观察性 Molang 求值和没有 `allowEmitting()` 权限的上下文都会返回 `0`。因此在 Blockbench 中应把指令放在实际播放的模型动画 timeline 中，而不是预览专用动画或只用于查询的 Molang 表达式中。
 
-特效载体是客户端本地的无碰撞实体，初始位置取触发指令的 Minecraft 实体，后续每 tick 跟随该实体。模型、Bedrock 动画和粒子均由 eyelib 渲染，YSM 只负责动画控制。
+特效载体是客户端本地的无碰撞实体，初始位置取触发指令的 Minecraft 实体，`vfx_play` 后续每 tick 跟随该实体，`vfx_play_fixed` 则保持触发时的根变换。模型、Bedrock 动画和粒子均由 eyelib 渲染，YSM 只负责动画控制。
 
 ## 资源和命令
 

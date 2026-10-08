@@ -29,6 +29,61 @@ test('multiple geometry candidates require explicit model binding', t => {
   assert.equal(views[1].files[0].count, 3);
   assert.equal(views[2].effects.length, 0);
 });
+test('degenerate per-face UVs are found and repaired across every geometry', t => {
+  const project = projectFixture(t);
+  const first = project.models[0].geometry;
+  first.bones[0].cubes[0].faces = {
+    south: {uv: [16, 0], uv_size: [0, 1]},
+    north: {uv: [0, 16], uv_size: [1, 0]},
+    east: {uv: [4, 4], uv_size: [1, 1]}
+  };
+  const second = project.models[1].geometry;
+  second.bones[0].children = [{name: 'child', cubes: [{faces: {up: {uv: [0, 0], uv_size: [0, 0]}}}]}];
+  const issues = core.inspectProjectUv(project);
+  assert.equal(issues.length, 3);
+  assert.deepEqual(issues.map(issue => issue.replacement), [[-1, 1], [1, -1], [1, 1]]);
+  const repaired = core.repairDegenerateModelUv(project, {write: false});
+  assert.equal(repaired.count, 3);
+  assert.deepEqual(first.bones[0].cubes[0].faces.south.uv_size, [-1, 1]);
+  assert.deepEqual(first.bones[0].cubes[0].faces.north.uv_size, [1, -1]);
+  assert.deepEqual(second.bones[0].children[0].cubes[0].faces.up.uv_size, [1, 1]);
+  assert.equal(core.inspectProjectUv(project).length, 0);
+});
+test('valid positive and negative one-pixel face UVs are preserved', t => {
+  const project = projectFixture(t);
+  project.models[0].geometry.bones[0].cubes[0].faces = {
+    south: {uv: [16, 0], uv_size: [-1, 1]},
+    north: {uv: [0, 16], uv_size: [1, -1]}
+  };
+  assert.deepEqual(core.inspectProjectUv(project), []);
+});
+test('Bedrock cube.uv face maps are scanned and repaired', t => {
+  const project = projectFixture(t);
+  project.models[0].geometry.bones[0].cubes[0].uv = {
+    south: {uv: [16, 0], uv_size: [0, 1]},
+    north: {uv: [0, 16], uv_size: [1, 0]}
+  };
+  const issues = core.inspectProjectUv(project);
+  assert.equal(issues.length, 2);
+  assert.deepEqual(issues.map(issue => issue.replacement), [[-1, 1], [1, -1]]);
+  core.repairDegenerateModelUv(project, {write: false});
+  assert.deepEqual(project.models[0].geometry.bones[0].cubes[0].uv.south.uv_size, [-1, 1]);
+  assert.deepEqual(project.models[0].geometry.bones[0].cubes[0].uv.north.uv_size, [1, -1]);
+});
+test('UV repair writes every affected geo file and leaves a recoverable backup', t => {
+  const project = projectFixture(t);
+  const source = path.join(project.root, project.models[0].path);
+  const document = JSON.parse(fs.readFileSync(source));
+  document['minecraft:geometry'][0].bones[0].cubes[0].faces = {south: {uv: [16, 0], uv_size: [0, 1]}};
+  fs.writeFileSync(source, JSON.stringify(document, null, 2));
+  const rescanned = core.scan(project.root);
+  const result = core.repairDegenerateModelUv(rescanned, {write: true});
+  assert.equal(result.count, 1);
+  assert.ok(result.backup && fs.existsSync(path.join(result.backup, rescanned.models[0].path)));
+  const saved = JSON.parse(fs.readFileSync(source));
+  assert.deepEqual(saved['minecraft:geometry'][0].bones[0].cubes[0].faces.south.uv_size, [-1, 1]);
+  assert.equal(core.inspectProjectUv(rescanned).length, 0);
+});
 test('duplicate numeric aliases and particle identifiers export distinct correct references', t => {
   const project = projectFixture(t);
   const effect = project.effects[0];
@@ -342,6 +397,8 @@ test('recent workflow paths survive lookup and fall back when a folder is remove
   assert.equal(core.recentPath('test_recent_path'), path.resolve(parent));
 });
 test('YSM Molang uses the pack and effect IDs', () => {
+  assert.equal(core.molang({packId: 'demo_pack'}, {name: 'slash'}, 'skill_1', true),
+    "ctrl.vfx_play_fixed('demo_pack:slash', 'skill_1');");
   assert.equal(core.molang({packId: 'demo_pack'}, {name: 'slash'}),
     "ctrl.vfx_play('demo_pack:slash', 'main');");
   assert.equal(core.molang({packId: '中文包'}, {name: 'slash'}, 'skill_1'),

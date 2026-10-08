@@ -385,6 +385,94 @@
       for (const child of bone.children || []) checkBone(child);
     }
     for (const bone of geometry.bones || []) checkBone(bone);
+    const degenerate = inspectDegenerateModelUv(geometry, file);
+    if (degenerate.length) {
+      const first = degenerate[0];
+      throw new Error(`${file}：检测到 ${degenerate.length} 个退化逐面 UV（${first.bone} / ${first.face} 的 uv_size 为 ${JSON.stringify(first.uvSize)}）。请使用 VFX → 检查/修复退化 UV，将 0 改为有效的正负像素范围。`);
+    }
+  }
+  const UV_EPSILON = 0.000001;
+  function uvSign(coordinate, extent) {
+    if (Math.abs(coordinate - extent) <= UV_EPSILON) return -1;
+    if (Math.abs(coordinate) <= UV_EPSILON) return 1;
+    return coordinate > extent / 2 ? -1 : 1;
+  }
+  function inspectDegenerateModelUv(geometry, file = '', geometryIndex = 0) {
+    const width = Number(geometry?.description?.texture_width);
+    const height = Number(geometry?.description?.texture_height);
+    const issues = [];
+    function visitBone(bone, bonePath) {
+      for (let cubeIndex = 0; cubeIndex < (bone.cubes || []).length; cubeIndex++) {
+        const cube = bone.cubes[cubeIndex];
+        // Bedrock geo files use cube.uv for per-face UVs.  The Blockbench
+        // project representation used by some import paths calls the same
+        // map cube.faces, so inspect both forms.
+        const faceMap = cube.uv && typeof cube.uv === 'object' && !Array.isArray(cube.uv)
+          ? cube.uv
+          : (cube.faces && typeof cube.faces === 'object' ? cube.faces : {});
+        for (const [face, value] of Object.entries(faceMap)) {
+          if (!value || !Array.isArray(value.uv_size) || value.uv_size.length < 2) continue;
+          const uv = Array.isArray(value.uv) ? value.uv : [];
+          const uvSize = value.uv_size;
+          const horizontal = Number(uvSize[0]);
+          const vertical = Number(uvSize[1]);
+          if (!Number.isFinite(horizontal) || !Number.isFinite(vertical) ||
+              (Math.abs(horizontal) > UV_EPSILON && Math.abs(vertical) > UV_EPSILON)) continue;
+          const u = Number(uv[0]), v = Number(uv[1]);
+          const replacement = [
+            Math.abs(horizontal) <= UV_EPSILON && Number.isFinite(u) && Number.isFinite(width) && width > 0 ? uvSign(u, width) : uvSize[0],
+            Math.abs(vertical) <= UV_EPSILON && Number.isFinite(v) && Number.isFinite(height) && height > 0 ? uvSign(v, height) : uvSize[1]
+          ];
+          issues.push({file, geometryIndex, geometryId: geometry?.description?.identifier || '', bone: bone.name || '(未命名)', bonePath,
+            cube: cubeIndex, face, uv: Array.isArray(value.uv) ? [...value.uv] : [], uvSize: [...uvSize], replacement, value});
+        }
+      }
+      for (let childIndex = 0; childIndex < (bone.children || []).length; childIndex++) {
+        const child = bone.children[childIndex];
+        visitBone(child, `${bonePath}/children[${childIndex}]`);
+      }
+    }
+    for (let boneIndex = 0; boneIndex < (geometry?.bones || []).length; boneIndex++) {
+      const bone = geometry.bones[boneIndex];
+      visitBone(bone, `bones[${boneIndex}]`);
+    }
+    return issues;
+  }
+  function inspectProjectUv(project) {
+    return (project?.models || []).flatMap(model => inspectDegenerateModelUv(model.geometry, model.path, model.index)
+      .map(issue => ({...issue, modelKey: model.key})));
+  }
+  function repairDegenerateModelUv(project, options = {}) {
+    const issues = inspectProjectUv(project);
+    if (!issues.length) return {count: 0, files: [], backup: ''};
+    for (const issue of issues) issue.value.uv_size = [...issue.replacement];
+    const changedFiles = new Set(issues.map(issue => issue.file));
+    let backup = '';
+    if (options.write !== false) {
+      backup = path.join(editBackupRoot(project.root), `uv-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`);
+      for (const file of changedFiles) {
+        const absolute = fileAt(project.root, file);
+        if (fs.existsSync(absolute)) {
+          const old = fileAt(backup, file); fs.mkdirSync(path.dirname(old), {recursive: true}); fs.copyFileSync(absolute, old);
+        }
+      }
+      for (const file of changedFiles) {
+        const absolute = fileAt(project.root, file);
+        const document = readJson(absolute);
+        for (const model of project.models.filter(candidate => candidate.path === file)) {
+          if (document['minecraft:geometry']?.[model.index]) document['minecraft:geometry'][model.index] = model.geometry;
+        }
+        const temporary = absolute + '.uv.tmp';
+        fs.writeFileSync(temporary, JSON.stringify(document, null, 2) + '\n');
+        fs.renameSync(temporary, absolute);
+      }
+      // Keep the scan cache and any open picker in sync with the source files.
+      for (const model of project.models) {
+        if (!changedFiles.has(model.path)) continue;
+        model.geometry = readJson(fileAt(project.root, model.path))['minecraft:geometry'][model.index];
+      }
+    }
+    return {count: issues.length, files: [...changedFiles], backup, issues};
   }
   function importedUvSize(model, occupied) {
     if (occupied || model?.meta?.model_format !== 'bedrock' || !model.elements?.length ||
@@ -850,10 +938,10 @@
     } catch (_) { /* StateMemory is optional in tests/older builds */ }
     return resolved;
   }
-  function molang(project, effect, slot = 'main') {
+  function molang(project, effect, slot = 'main', fixed = false) {
     if (!project || !effect || !project.packId || !effect.name) return '';
     const quote = value => String(value).replaceAll('\\', '\\\\').replaceAll("'", "\\'");
-    return `ctrl.vfx_play('${quote(project.packId)}:${quote(effect.name)}', '${quote(slot)}');`;
+    return `ctrl.${fixed ? 'vfx_play_fixed' : 'vfx_play'}('${quote(project.packId)}:${quote(effect.name)}', '${quote(slot)}');`;
   }
   function inspectOgg(bytes) {
     if (!Buffer.isBuffer(bytes) || bytes.length > 4 * 1024 * 1024) throw new Error('OGG 文件不能超过 4 MiB');
@@ -947,7 +1035,7 @@
     candidate.audio.sounds[id] = {file: rel, volume: 1, pitch: 1, range: 24, follow: false};
     saveAudio(candidate); project.audio = candidate.audio; return id;
   }
-  const Core = {particleDocument, inspectOgg, audioDocument, saveAudio, importAudio, scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath, molang, importedUvSize, planImportedUv};
+  const Core = {particleDocument, inspectOgg, audioDocument, saveAudio, importAudio, scan, settings, validate, build, exportPack, saveSettings, createEmptyPack, modelViews, makeEffect, captureBindings, eventParticle, stableAlias, setEventAlias, events, fileAt, token, emptyGeometry, particleTextureFile, planAssetSync, applyAssetSync, publishRuntime, editBackupRoot, recentPath, rememberPath, molang, importedUvSize, planImportedUv, inspectDegenerateModelUv, inspectProjectUv, repairDegenerateModelUv};
   if (typeof Blockbench === 'undefined') { module.exports = Core; return; }
 
   // Desktop UI is below; the import/export core is also exercised by Node tests.
@@ -983,8 +1071,8 @@
     if (selected) rememberPath(kind, selected);
     return selected;
   }
-  function copyMolangText(project, effect) {
-    const text = molang(project, effect);
+  function copyMolangText(project, effect, fixed = false) {
+    const text = molang(project, effect, 'main', fixed);
     if (!text) throw new Error('当前没有可复制的特效 Molang');
     if (typeof Clipbench !== 'undefined' && typeof Clipbench.setText === 'function') Clipbench.setText(text);
     else if (typeof navigator !== 'undefined' && navigator.clipboard) navigator.clipboard.writeText(text);
@@ -997,6 +1085,22 @@
     const session = sessions.get(Project?.uuid);
     if (session && ModelProject.all.includes(session.project)) studio = session.studio;
     return studio;
+  }
+  function repairProjectUv() {
+    if (!studio) throw new Error('请先打开特效包');
+    const issues = inspectProjectUv(studio);
+    if (!issues.length) {
+      Blockbench.showQuickMessage('已检查全部 geo 模型，没有发现退化 UV。', 3500);
+      return;
+    }
+    const result = repairDegenerateModelUv(studio, {write: true});
+    const details = result.issues.slice(0, 24).map(issue =>
+      `${issue.file} · geometry #${issue.geometryIndex} · ${issue.bone} · ${issue.face}：${JSON.stringify(issue.uvSize)} → ${JSON.stringify(issue.replacement)}`);
+    const suffix = result.issues.length > details.length ? `\n……其余 ${result.issues.length - details.length} 个已修复` : '';
+    Blockbench.showMessageBox({title: '退化 UV 已修复', message:
+      `已扫描全部模型并修复 ${result.count} 个逐面 UV。\n\n${details.join('\n')}${suffix}\n\n源文件备份：${result.backup}\n请重新打开对应模型标签，或使用 VFX → 重新扫描资产。`});
+    picker?.delete();
+    showModelPicker();
   }
   const sessions = new Map();
   const errorBox = error => { console.error('[YesSteveVFX]', error); Blockbench.showMessageBox({title: 'YesSteveVFX', message: String(error.message || error)}); };
@@ -1217,11 +1321,13 @@
       component: {
         data: {views: modelViews(studio).map(view => {
           let uvError = '';
+          let uvIssues = [];
           if (view.model) try { validateModelUv(view.model.geometry, view.model.path); } catch (error) { uvError = error.message; }
-          return {...view, uvError};
+          if (view.model) uvIssues = inspectDegenerateModelUv(view.model.geometry, view.model.path, view.model.index);
+          return {...view, uvError, uvIssues};
         }), search: '', root: studio.root,
           counts: {models: studio.models.length, animations: studio.animations.length, particles: studio.particles.length}},
-        computed: {filtered() { return this.views.filter(v => JSON.stringify([v.model?.path, v.model?.id, v.effects.map(e => e.name)]).toLowerCase().includes(this.search.toLowerCase())); }},
+        computed: {filtered() { return this.views.filter(v => JSON.stringify([v.model?.path, v.model?.id, v.effects.map(e => e.name)]).toLowerCase().includes(this.search.toLowerCase())); }, degenerateUvCount() { return this.views.reduce((count, view) => count + view.uvIssues.length, 0); }},
         methods: {
           open(view) { guard(() => {
             const effect = view.effects[0] || {key: 'model_' + view.key, name: view.model.id, model: view.key,
@@ -1235,6 +1341,7 @@
           <div class="vfx-models-header">
             <p class="vfx-models-status">已载入 {{counts.models}} 个模型 · {{counts.animations}} 个动画 · {{counts.particles}} 个粒子</p>
             <p class="vfx-path" :title="root">{{root}}</p>
+            <p class="vfx-model-uv-error" v-if="degenerateUvCount">整个工程检测到 {{degenerateUvCount}} 个退化逐面 UV，请使用 VFX → 检查/修复退化 UV。</p>
           </div>
           <div class="vfx-models-toolbar">
             <input type="text" class="vfx-models-search" aria-label="搜索模型、geometry 或特效" placeholder="搜索模型、geometry 或特效" v-model="search">
@@ -1248,6 +1355,7 @@
               <p class="vfx-model-meta" v-if="v.model">geometry #{{v.model.index}} · {{v.bones}} 骨骼 · {{v.cubes}} 方块</p>
               <p class="vfx-model-meta" v-if="v.model">模型 UV：{{v.model.geometry.description.texture_width}} × {{v.model.geometry.description.texture_height}}（独立于 PNG 分辨率）</p>
               <p class="vfx-model-uv-error" v-if="v.uvError">{{v.uvError}}</p>
+              <p class="vfx-model-uv-error" v-if="v.uvIssues.length">检测到 {{v.uvIssues.length}} 个退化逐面 UV；导出前请使用 VFX → 检查/修复退化 UV。</p>
               <dl class="vfx-model-info">
                 <template v-if="v.model"><dt>模型标识</dt><dd>{{v.model.id}}</dd></template>
                 <dt>特效</dt><dd>{{v.effects.map(e => e.name).join('、') || '尚未关联'}}</dd>
@@ -1690,7 +1798,7 @@
         },
         methods: {
           save() { guard(saveWorkspace); }, check() { this.message = validate(studio).join('\n') || '检查通过：每个动画事件、定位器和贴图都有明确绑定。'; },
-          audio() { guard(showAudio); }, help() { showHelp(); }, molang(effect) { return molang(studio, effect); }, preview() { guard(() => preview(this.current)); }, copyMolang() { guard(() => copyMolangText(studio, this.current)); }, capture() { guard(capture); this.$forceUpdate(); },
+          audio() { guard(showAudio); }, help() { showHelp(); }, molang(effect, fixed = false) { return molang(studio, effect, 'main', fixed); }, preview() { guard(() => preview(this.current)); }, copyMolang(fixed = false) { guard(() => copyMolangText(studio, this.current, fixed)); }, capture() { guard(capture); this.$forceUpdate(); },
           syncAssets() { guard(syncExternalAssets); }, exportClient() { guard(exportClient); }, exportFolder() { guard(() => { const dir = pickRecentDirectory('export_folder', '选择导出父目录（将创建包 ID 子目录）'); if (dir) exportTo(dir); }); },
           binding(event) { return eventParticle(this.p, this.current, event); },
           bind(event, value) { this.$set(this.current.eventBindings, event.key, {alias: event.effect, particle: value}); },
@@ -1715,7 +1823,7 @@
           <div class="vfx-toolbar"><button @click="tab='effects'">特效绑定</button><button @click="tab='particles'">粒子与贴图</button><button @click="tab='assets'">全部资产</button><button @click="audio">音效</button></div>
           <div v-if="tab==='effects'" class="vfx-columns"><div class="vfx-list"><button @click="add">＋ 新建特效</button><div v-for="e in p.effects" :key="e.key"><input type="checkbox" v-model="e.enabled"><button @click="selected=e.key" :class="{selected:selected===e.key}">{{e.name}}</button></div><p v-if="!p.effects.length">当前工程还没有特效。点击“＋ 新建特效”，再选择模型、动画和粒子。</p></div>
             <div v-if="current" class="vfx-detail">
-              <div class="vfx-detail-heading"><label>特效名<input v-model="current.name"></label><button type="button" class="vfx-danger" @click="remove">删除当前特效</button></div><div class="vfx-molang"><label>YSM 指令帧 Molang</label><div class="vfx-molang-row"><code>{{molang(current)}}</code><button type="button" @click="copyMolang">复制</button></div><small>复制后粘贴到 YSM 动画的“动画效果 → 指令”帧。</small></div><label>持续时间（tick；20 tick = 1 秒）<input type="number" min="1" max="72000" v-model.number="current.duration"></label>
+              <div class="vfx-detail-heading"><label>特效名<input v-model="current.name"></label><button type="button" class="vfx-danger" @click="remove">删除当前特效</button></div><div class="vfx-molang"><label>YSM 指令帧 Molang</label><div class="vfx-molang-row"><code>{{molang(current)}}</code><button type="button" @click="copyMolang(false)">复制跟随播放</button></div><div class="vfx-molang-row"><code>{{molang(current, true)}}</code><button type="button" @click="copyMolang(true)">复制原地播放</button></div><small>原地播放记录指令帧执行时的位置和朝向；放在第 0 帧即可固定于动作起始位置。之后移动/转身不会带走特效；模型动画和粒子自身运动照常播放。</small></div><label>持续时间（tick；20 tick = 1 秒）<input type="number" min="1" max="72000" v-model.number="current.duration"></label>
               <label>模型<select v-model="current.model" @change="modelChanged"><option value="">无模型（仅粒子）</option><option v-for="m in p.models" :value="m.key">{{m.path}} · {{m.id}}</option></select></label>
               <p v-if="current.modelUnresolved">模型关系尚未确认。请选择模型，或点击<button @click="modelChanged">确认为仅粒子</button></p>
               <label v-if="current.model">模型贴图<select v-model="current.texture"><option value="">请选择</option><option v-for="t in p.textures" :value="t.key">{{t.path}}</option></select></label>
@@ -1766,7 +1874,7 @@
   const pluginId = registered.yesstevevfx_studio ? 'yesstevevfx_studio' : (loadingLocal || 'yesstevevfx_studio');
   pluginApi.register(pluginId, {
     title: 'YesSteveVFX Studio', author: 'DanielFQZ', description: '导入 VFX 文件夹、绑定模型/动画/粒子/贴图、预览并导出 Minecraft 特效包。',
-    icon: 'auto_awesome', version: '1.0.0-pre.2-audio.7', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
+    icon: 'auto_awesome', version: '1.0.0-pre.2-fixed.1', min_version: '5.0.0', variant: 'desktop', tags: ['Animation', 'Minecraft: Java Edition'],
     onload() {
       Blockbench.on('undo', undoSyncListener);
       Blockbench.on('redo', redoSyncListener);
@@ -1839,6 +1947,7 @@
         ['new_pack', '新建特效包', 'create_new_folder', createPack],
         ['models', '切换模型 / 打开其他模型', 'view_in_ar', showModelPicker],
         ['rescan', '重新扫描资产', 'refresh', rescan],
+        ['repair_uv', '检查/修复退化 UV', 'texture', repairProjectUv],
         ['sync_assets', '同步外部资产到特效包', 'drive_file_move', syncExternalAssets],
         ['update_runtime', '更新当前包的运行时资源', 'build', updateCurrentRuntime],
         ['audio', '音效管理', 'volume_up', showAudio],

@@ -128,6 +128,24 @@ public final class VfxClientRuntime {
         return accepted;
     }
 
+    /** Capture at evaluation time, not next tick; never retain the source entity in the queue. */
+    public static boolean enqueuePlayFixed(Entity source, String effectId, String slot) {
+        if (source == null || source.isRemoved() || !source.level().isClientSide
+                || source.level() != Minecraft.getInstance().level || !VfxActionQueue.validSlot(slot)
+                || effectId == null || !bundles.containsKey(effectId) || !hasBackend()) return false;
+        Vec3 position = source.position();
+        var snapshot = new VfxActionQueue.Transform(position.x, position.y, position.z, source.getYRot(), source.getXRot());
+        return PENDING.playFixed(source.getUUID(), effectId, slot, snapshot);
+    }
+
+    private static boolean playFixed(UUID sourceId, String effectId, String slot, VfxActionQueue.Transform snapshot) {
+        ClientLevel level = Minecraft.getInstance().level;
+        EffectAssetBundle bundle = bundles.get(effectId);
+        if (level == null || bundle == null) return false;
+        return playInternal(sourceId, effectId, slot, bundle, new Vec3(snapshot.x(), snapshot.y(), snapshot.z()),
+                snapshot.yaw(), snapshot.pitch(), level, true);
+    }
+
     public static boolean enqueueStop(UUID sourceId, String slot) {
         boolean accepted = sourceId != null && hasBackend()
                 && PENDING.stop(sourceId, slot, VfxClientRuntime::hasActiveSlot);
@@ -275,7 +293,8 @@ public final class VfxClientRuntime {
             try {
                 boolean applied;
                 if (action instanceof VfxActionQueue.Play play) {
-                    applied = play(key.sourceId(), play.effectId(), key.slot());
+                    applied = play.snapshot() == null ? play(key.sourceId(), play.effectId(), key.slot())
+                            : playFixed(key.sourceId(), play.effectId(), key.slot(), play.snapshot());
                 } else if (action instanceof VfxActionQueue.Stop) {
                     applied = stop(key.sourceId(), key.slot());
                 } else {

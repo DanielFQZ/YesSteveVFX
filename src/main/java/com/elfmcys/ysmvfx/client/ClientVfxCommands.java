@@ -60,6 +60,20 @@ public final class ClientVfxCommands {
                                                         StringArgumentType.getString(context, "name"),
                                                         DoubleArgumentType.getDouble(context, "value")))))));
 
+        root.then(Commands.literal("play_fixed")
+                .then(Commands.argument("effect", ResourceLocationArgument.id())
+                        .suggests((context, builder) -> {
+                            VfxClientRuntime.bundles().keySet().forEach(builder::suggest);
+                            return builder.buildFuture();
+                        })
+                        .then(Commands.argument("slot", StringArgumentType.word()).executes(context -> {
+                            boolean accepted = VfxClientRuntime.enqueuePlayFixed(Minecraft.getInstance().player,
+                                    ResourceLocationArgument.getId(context, "effect").toString(),
+                                    StringArgumentType.getString(context, "slot"));
+                            if (!accepted) return fail(context.getSource(), "[yesstevevfx] Fixed effect unavailable or invalid slot");
+                            context.getSource().sendSuccess(() -> Component.literal("[yesstevevfx] Fixed effect queued at current position"), false);
+                            return 1;
+                        }))));
         root.then(Commands.literal("sound")
                 .then(Commands.literal("play").then(Commands.argument("sound", ResourceLocationArgument.id())
                         .suggests((ctx, builder) -> { AudioRuntime.catalog().sounds().keySet().forEach(builder::suggest); return builder.buildFuture(); })
