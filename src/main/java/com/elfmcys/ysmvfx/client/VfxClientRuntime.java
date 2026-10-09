@@ -17,12 +17,21 @@ import java.util.concurrent.CompletableFuture;
 import com.elfmcys.ysmvfx.audio.*;
 import com.elfmcys.ysmvfx.asset.VfxAssetCatalog;
 import java.util.Map;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import com.elfmcys.ysmvfx.api.VfxHitBox;
 
 /** Client-side command and lifetime owner for complete model-plus-particle effects. */
 public final class VfxClientRuntime {
     private static final Logger LOGGER = LoggerFactory.getLogger(YesSteveVfx.MOD_ID + ".client");
+    /**
+     * Small gap between a hit target's projected bounding-box surface and a
+     * hit effect.  The effect is still world-fixed, but this keeps its carrier
+     * in front of the target for the current camera instead of inside the
+     * target's model where normal depth testing can hide it.
+     */
+    private static final double HIT_OVERLAY_CLEARANCE = 0.06D;
     private static final Map<Key, RunningEffect> ACTIVE = new ConcurrentHashMap<>();
     private record HitKey(UUID source, String slot) { }
     private static final Map<HitKey, HitWatch> HIT_WATCHES = new ConcurrentHashMap<>();
@@ -138,12 +147,45 @@ public final class VfxClientRuntime {
         return PENDING.playFixed(source.getUUID(), effectId, slot, snapshot);
     }
 
+    /** Starts an effect on the Camera lock target. The default mode follows the target. */
+    public static boolean enqueuePlayTarget(Entity source, String effectId, String slot, String mode) {
+        if (source == null || source.isRemoved() || !source.level().isClientSide
+                || source.level() != Minecraft.getInstance().level || !VfxActionQueue.validSlot(slot)
+                || effectId == null || !bundles.containsKey(effectId) || !hasBackend()) return false;
+        VfxTargetBridge.TargetRef target = VfxTargetBridge.resolve(source.getUUID());
+        if (target == null) return false;
+        return PENDING.playTarget(source.getUUID(), effectId, slot, target.entityId(), normalizeTargetMode(mode));
+    }
+
+    public static boolean enqueuePlayTarget(UUID sourceId, String effectId, String slot, String mode) {
+        ClientLevel level = Minecraft.getInstance().level;
+        Entity source = level == null ? null : findEntity(level, sourceId);
+        return enqueuePlayTarget(source, effectId, slot, mode);
+    }
+
+    private static String normalizeTargetMode(String mode) {
+        return switch (mode == null ? "follow_target" : mode) {
+            case "at_target", "attach_target", "follow_target" -> mode;
+            default -> "follow_target";
+        };
+    }
+
     private static boolean playFixed(UUID sourceId, String effectId, String slot, VfxActionQueue.Transform snapshot) {
         ClientLevel level = Minecraft.getInstance().level;
         EffectAssetBundle bundle = bundles.get(effectId);
         if (level == null || bundle == null) return false;
         return playInternal(sourceId, effectId, slot, bundle, new Vec3(snapshot.x(), snapshot.y(), snapshot.z()),
                 snapshot.yaw(), snapshot.pitch(), level, true);
+    }
+
+    private static boolean playTarget(UUID sourceId, String effectId, String slot, UUID targetId, String mode) {
+        ClientLevel level = Minecraft.getInstance().level;
+        EffectAssetBundle bundle = bundles.get(effectId);
+        Entity target = level == null ? null : findEntity(level, targetId);
+        if (level == null || bundle == null || target == null || target.isRemoved()) return false;
+        boolean fixed = "at_target".equals(mode);
+        return playInternal(sourceId, effectId, slot, bundle, target.position(), target.getYRot(), target.getXRot(),
+                level, fixed, fixed ? null : targetId);
     }
 
     public static boolean enqueueStop(UUID sourceId, String slot) {
@@ -227,6 +269,51 @@ public final class VfxClientRuntime {
         return playInternal(sourceId, effectId, slot, bundle, source.position(), source.getYRot(), source.getXRot(), level, false);
     }
 
+    /**
+     * Returns the world position used for a hit overlay.  YSS supplies the
+     * target bounding-box centre.  We project that point to the near side of
+     * the target along the camera-to-target line, then add a small clearance.
+     * This preserves normal depth testing (walls and other geometry still
+     * occlude the effect) while preventing the hit target itself from hiding
+     * the effect.
+     */
+    public static Vec3 hitOverlayPosition(Vec3 hitPosition, Entity target) {
+        if (hitPosition == null || !isFinite(hitPosition)) return hitPosition;
+
+        Minecraft minecraft = Minecraft.getInstance();
+        Vec3 targetCenter = target != null && !target.isRemoved()
+                ? target.getBoundingBox().getCenter() : hitPosition;
+        Vec3 towardCamera = minecraft.gameRenderer.getMainCamera().getPosition().subtract(targetCenter);
+        double lengthSqr = towardCamera.lengthSqr();
+        if (!Double.isFinite(lengthSqr) || lengthSqr < 1.0E-8D) {
+            // A camera can briefly be inside a very large target.  The
+            // inverse look vector still gives a deterministic target-to-view
+            // direction in that case.
+            var look = minecraft.gameRenderer.getMainCamera().getLookVector();
+            towardCamera = new Vec3(-look.x(), -look.y(), -look.z());
+            lengthSqr = towardCamera.lengthSqr();
+        }
+        if (!Double.isFinite(lengthSqr) || lengthSqr < 1.0E-8D) return hitPosition;
+
+        Vec3 direction = towardCamera.scale(1.0D / Math.sqrt(lengthSqr));
+        double projectedHalfExtent = 0.0D;
+        if (target != null && !target.isRemoved()) {
+            var box = target.getBoundingBox();
+            // Support radius of the target's axis-aligned bounds in the view
+            // direction.  This puts the carrier just beyond the visible side
+            // instead of merely moving it a fixed amount through the model.
+            projectedHalfExtent = Math.abs(direction.x) * box.getXsize() * 0.5D
+                    + Math.abs(direction.y) * box.getYsize() * 0.5D
+                    + Math.abs(direction.z) * box.getZsize() * 0.5D;
+        }
+        double offset = projectedHalfExtent + HIT_OVERLAY_CLEARANCE;
+        return hitPosition.add(direction.scale(Double.isFinite(offset) ? offset : HIT_OVERLAY_CLEARANCE));
+    }
+
+    private static boolean isFinite(Vec3 value) {
+        return Double.isFinite(value.x) && Double.isFinite(value.y) && Double.isFinite(value.z);
+    }
+
     /** Starts a hit effect at a captured target position; the carrier remains world-fixed. */
     public static boolean playHitEffect(UUID ownerId, String effectId, String slot, Vec3 position, long sequence) {
         Minecraft minecraft = Minecraft.getInstance();
@@ -241,6 +328,12 @@ public final class VfxClientRuntime {
 
     private static boolean playInternal(UUID sourceId, String effectId, String slot, EffectAssetBundle bundle, Vec3 position,
                                          float yaw, float pitch, ClientLevel level, boolean fixedPosition) {
+        return playInternal(sourceId, effectId, slot, bundle, position, yaw, pitch, level, fixedPosition, null);
+    }
+
+    private static boolean playInternal(UUID sourceId, String effectId, String slot, EffectAssetBundle bundle, Vec3 position,
+                                         float yaw, float pitch, ClientLevel level, boolean fixedPosition,
+                                         UUID followTargetId) {
         EffectPlayRequest request;
         try {
             request = new EffectPlayRequest(sourceId, slot, position, yaw, pitch, level.getGameTime());
@@ -259,7 +352,7 @@ public final class VfxClientRuntime {
                 return false;
             }
             ACTIVE.put(key, new RunningEffect(handle, effectId, request.clientTick(),
-                    bundle.definition().durationTicks(), fixedPosition));
+                    bundle.definition().durationTicks(), fixedPosition, followTargetId));
             return true;
         } catch (Exception exception) {
             LOGGER.error("Could not start effect {}", effectId, exception);
@@ -295,6 +388,9 @@ public final class VfxClientRuntime {
                 if (action instanceof VfxActionQueue.Play play) {
                     applied = play.snapshot() == null ? play(key.sourceId(), play.effectId(), key.slot())
                             : playFixed(key.sourceId(), play.effectId(), key.slot(), play.snapshot());
+                } else if (action instanceof VfxActionQueue.TargetPlay targetPlay) {
+                    applied = playTarget(key.sourceId(), targetPlay.effectId(), key.slot(),
+                            targetPlay.targetId(), targetPlay.mode());
                 } else if (action instanceof VfxActionQueue.Stop) {
                     applied = stop(key.sourceId(), key.slot());
                 } else {
@@ -316,8 +412,10 @@ public final class VfxClientRuntime {
         for (var entry : ACTIVE.entrySet()) {
             Key key = entry.getKey();
             RunningEffect running = entry.getValue();
-            Entity source = running.fixedPosition() ? null : findEntity(level, key.sourceId());
-            if (!running.fixedPosition() && (source == null || source.isRemoved())) {
+            Entity source = running.fixedPosition() ? null
+                    : running.followTargetId() != null ? findEntity(level, running.followTargetId())
+                    : findEntity(level, key.sourceId());
+            if (!running.fixedPosition() && (source == null || source.isRemoved() || !source.isAlive())) {
                 if (ACTIVE.remove(key, running)) {
                     backend.stop(running.handle());
                 }
@@ -372,10 +470,24 @@ public final class VfxClientRuntime {
         return null;
     }
 
+    /** Returns final world-space HitBlock boxes exported by the active eyelib backend. */
+    public static List<VfxHitBox> activeHitBoxes(UUID sourceId) {
+        if (sourceId == null) return List.of();
+        java.util.ArrayList<VfxHitBox> result = new java.util.ArrayList<>();
+        for (var entry : ACTIVE.entrySet()) {
+            if (!sourceId.equals(entry.getKey().sourceId())) continue;
+            for (var box : backend.hitBoxes(entry.getValue().handle())) {
+                result.add(new VfxHitBox(entry.getValue().effectId(), entry.getKey().slot(), box));
+            }
+        }
+        return List.copyOf(result);
+    }
+
     private record Key(UUID sourceId, String slot) {
     }
 
     private record RunningEffect(EffectHandle handle, String effectId,
-                                 long startTick, int durationTicks, boolean fixedPosition) {
+                                 long startTick, int durationTicks, boolean fixedPosition,
+                                 UUID followTargetId) {
     }
 }

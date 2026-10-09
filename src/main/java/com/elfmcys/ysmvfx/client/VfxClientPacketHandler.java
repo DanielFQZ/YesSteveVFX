@@ -37,7 +37,8 @@ public final class VfxClientPacketHandler {
         for (var watch : watches.values()) {
             if (!watch.sound().isEmpty()) AudioRuntime.playHitSound(packet.attacker(), watch.sound(), position, target, packet.sequence());
             if (!watch.effect().isEmpty())
-                VfxClientRuntime.playHitEffect(packet.attacker(), watch.effect(), watch.effectSlot(), position, packet.sequence());
+                VfxClientRuntime.playHitEffect(packet.attacker(), watch.effect(), watch.effectSlot(),
+                        VfxClientRuntime.hitOverlayPosition(position, target), packet.sequence());
         }
     }
 }

@@ -67,4 +67,19 @@ class VfxActionQueueTest {
         assertTrue(queue.stop(SOURCE, "main", ignored -> false));
         assertFalse(queue.stop(SOURCE, "main", ignored -> false));
     }
+
+    @Test
+    void targetPlayKeepsTargetSnapshotAndSlotOrdering() {
+        var queue = new VfxActionQueue();
+        UUID target = UUID.randomUUID();
+        assertTrue(queue.playTarget(SOURCE, "yesstevevfx:impact", "hit", target, "at_target"));
+        assertTrue(queue.set(SOURCE, "hit", "scale", 0.75, ignored -> false));
+        var actions = queue.drain();
+        assertEquals(2, actions.size());
+        var play = (VfxActionQueue.TargetPlay) actions.get(0);
+        assertEquals(target, play.targetId());
+        assertEquals("at_target", play.mode());
+        assertEquals("hit", play.key().slot());
+        assertTrue(actions.get(1) instanceof VfxActionQueue.SetParameter);
+    }
 }

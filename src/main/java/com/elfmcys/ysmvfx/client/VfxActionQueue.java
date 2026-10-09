@@ -21,6 +21,15 @@ final class VfxActionQueue {
         return snapshot != null && play(source, effect, slot, snapshot);
     }
 
+    synchronized boolean playTarget(UUID source, String effect, String slot, UUID targetId, String mode) {
+        if (source == null || effect == null || effect.isBlank() || !validSlot(slot)
+                || targetId == null || pending.size() >= CAPACITY) return false;
+        Key key = new Key(source, slot);
+        pending.add(new TargetPlay(key, effect, targetId, mode));
+        pendingSlots.put(key, true);
+        return true;
+    }
+
     private boolean play(UUID source, String effect, String slot, Transform snapshot) {
         if (source == null || effect == null || effect.isBlank() || !validSlot(slot)
                 || pending.size() >= CAPACITY) {
@@ -97,12 +106,13 @@ final class VfxActionQueue {
 
     record Key(UUID sourceId, String slot) { }
 
-    sealed interface Action permits Play, Stop, SetParameter {
+    sealed interface Action permits Play, TargetPlay, Stop, SetParameter {
         Key key();
     }
 
     /** A non-null snapshot fixes the root at the instruction-frame transform. */
     record Play(Key key, String effectId, Transform snapshot) implements Action { }
+    record TargetPlay(Key key, String effectId, UUID targetId, String mode) implements Action { }
     record Stop(Key key) implements Action { }
     record SetParameter(Key key, String name, double value) implements Action { }
 }

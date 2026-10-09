@@ -12,6 +12,8 @@ import com.mojang.serialization.JsonOps;
 import io.github.tt432.eyelib.animation.AnimationComponent;
 import io.github.tt432.eyelib.animation.Animation;
 import io.github.tt432.eyelib.animation.AnimationRegistries;
+import io.github.tt432.eyelib.animation.ModelPoseTransforms;
+import io.github.tt432.eyelib.animation.ModelRuntimeData;
 import io.github.tt432.eyelib.animation.bedrock.BrAnimation;
 import io.github.tt432.eyelib.animation.bedrock.controller.BrAnimationControllers;
 import io.github.tt432.eyelib.bridge.client.render.texture.NativeImagePort;
@@ -29,6 +31,7 @@ import io.github.tt432.eyelib.importer.entity.BrClientEntity;
 import io.github.tt432.eyelib.importer.model.importer.BedrockGeometryImporter;
 import io.github.tt432.eyelib.importer.particle.BrParticle;
 import io.github.tt432.eyelib.model.Model;
+import io.github.tt432.eyelib.model.GlobalBoneIdHandler;
 import io.github.tt432.eyelib.particle.loading.ParticleDefinitionRegistry;
 import io.github.tt432.eyelib.particle.runtime.ParticleDefinition;
 import io.github.tt432.eyelib.particle.runtime.ParticleDefinitionAdapter;
@@ -37,6 +40,10 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
+import org.joml.Vector3f;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +52,7 @@ import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Collection;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -205,6 +213,66 @@ public final class EyelibBackend implements EffectBackend {
         instance.carrier.setXRot(request.pitch());
         instance.carrier.setYBodyRot(request.yaw());
         instance.carrier.setYHeadRot(request.yaw());
+    }
+
+    @Override
+    public List<AABB> hitBoxes(EffectHandle handle) {
+        if (!(handle instanceof Instance instance)) return List.of();
+        RenderData<?> data = RenderData.getComponent(instance.carrier);
+        if (data == null || data.getAnimationComponent() == null) return List.of();
+        ModelRuntimeData runtime = data.getAnimationComponent().tickedInfos;
+        if (runtime == null) runtime = ModelRuntimeData.EMPTY;
+        Vec3 origin = instance.carrier.position();
+        Matrix4f root = new Matrix4f()
+                .translate((float) origin.x, (float) origin.y, (float) origin.z)
+                .rotateY((float) Math.toRadians(180.0F - instance.carrier.getYRot()));
+        List<AABB> result = new ArrayList<>();
+        if (data.getModelComponents() == null) return List.of();
+        for (var component : data.getModelComponents()) {
+            Model model = component.getModel();
+            if (model == null) continue;
+            for (Model.Bone bone : model.toplevelBones().values()) {
+                collectHitBoxes(bone, root, runtime, result);
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static void collectHitBoxes(Model.Bone bone, Matrix4f parent, ModelRuntimeData runtime,
+                                        List<AABB> output) {
+        Vector3f scale = new Vector3f(runtime.scale(bone));
+        if (Math.abs(scale.x) < 1.0E-5F || Math.abs(scale.y) < 1.0E-5F || Math.abs(scale.z) < 1.0E-5F) {
+            return;
+        }
+        Matrix4f pose = new Matrix4f(parent);
+        ModelPoseTransforms.applyBone(pose, bone, runtime);
+        String name = GlobalBoneIdHandler.get(bone.id());
+        String binding = bone.binding();
+        boolean hitBlock = (name != null && name.toLowerCase(java.util.Locale.ROOT).startsWith("hitblock"))
+                || (binding != null && binding.toLowerCase(java.util.Locale.ROOT).startsWith("hitblock"));
+        if (hitBlock) {
+            AABB box = cubeBounds(bone, pose);
+            if (box != null) output.add(box);
+        }
+        for (Model.Bone child : bone.children().values()) {
+            collectHitBoxes(child, pose, runtime, output);
+        }
+    }
+
+    private static AABB cubeBounds(Model.Bone bone, Matrix4f pose) {
+        double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY, minZ = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY, maxZ = Double.NEGATIVE_INFINITY;
+        for (Model.Cube cube : bone.cubes()) {
+            for (Model.Face face : cube.faces()) {
+                for (Model.Vertex vertex : face.vertexes()) {
+                    Vector3f point = new Vector3f(vertex.position());
+                    pose.transformPosition(point);
+                    minX = Math.min(minX, point.x); minY = Math.min(minY, point.y); minZ = Math.min(minZ, point.z);
+                    maxX = Math.max(maxX, point.x); maxY = Math.max(maxY, point.y); maxZ = Math.max(maxZ, point.z);
+                }
+            }
+        }
+        return Double.isFinite(minX) ? new AABB(minX, minY, minZ, maxX, maxY, maxZ) : null;
     }
 
     @Override

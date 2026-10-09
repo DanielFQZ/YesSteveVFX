@@ -5,6 +5,8 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Map;
+import java.util.List;
+import net.minecraft.world.phys.AABB;
 
 /** Rendering backend boundary; the default build can run without eyelib. */
 public interface EffectBackend {
@@ -20,6 +22,11 @@ public interface EffectBackend {
 
     /** Updates the carrier root transform; backends may ignore it for world-fixed effects. */
     default void update(EffectHandle handle, EffectPlayRequest request) {
+    }
+
+    /** World-space collision boxes exported by the current animated model. */
+    default List<AABB> hitBoxes(EffectHandle handle) {
+        return List.of();
     }
 
     void clear();

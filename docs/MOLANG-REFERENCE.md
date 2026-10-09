@@ -65,6 +65,25 @@ ctrl.vfx_play_fixed('yesstevevfx:demo', 'skill_origin');
 
 Blockbench → VFX → 资产与绑定，同时提供“复制跟随播放”和“复制原地播放”，直接粘贴到 YSM 动画的指令帧。
 
+### `ctrl.vfx_play_target(effect_id, slot, mode)`
+
+在 Camera 当前锁定目标的位置播放特效。该函数只在 Camera 提供有效锁定快照时接受请求；没有锁定目标时返回 `0`。
+
+`mode` 有三种值：
+
+- `follow_target`：载体持续跟随锁定目标，适合持续附着在目标身上的法术或状态效果。
+- `at_target`：在指令帧执行时记录目标位置，之后固定在该位置，适合命中特效。
+- `attach_target`：当前版本按持续跟随处理，为后续接入目标骨骼挂载保留兼容值。
+
+示例：
+
+```molang
+ctrl.vfx_play_target('yesstevevfx:spell_hit', 'target_spell', 'follow_target');
+ctrl.vfx_play_target('yesstevevfx:impact', 'target_impact', 'at_target');
+```
+
+目标特效和普通特效共享来源实体的 slot；同一 slot 再次播放会替换旧实例。目标实体被移除或死亡后，持续跟随实例会自动清理。
+
 ### `ctrl.vfx_stop(slot)`
 
 停止当前来源实体指定 slot 的 effect。返回 `1` 表示已接受，返回 `0` 表示该 slot 没有正在运行的实例或请求不合法。已经生成的粒子会按照粒子自身寿命结束；carrier、模型和动画实例会被清理。
